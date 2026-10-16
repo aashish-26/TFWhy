@@ -1,525 +1,370 @@
-# Terraform Agent — Product & Engineering Execution Plan
+# TFWhy — Product Vision & Engineering Roadmap
 
-**Working name:** `tfwhy`  
-**Product type:** Local-first Terraform engineering assistant  
-**Development approach:** GitHub Copilot for implementation; ChatGPT for review, testing strategy, debugging, and design decisions  
-**Initial language:** Python  
-**Initial interface:** CLI  
-**Initial users:** Platform engineers, DevOps engineers, Terraform consultants, and small infrastructure teams
+> **Single source of truth** for product direction, architecture, engineering rules, completed work, and the active roadmap.
 
----
+| Field | Current position |
+| --- | --- |
+| Product | `tfwhy` |
+| Type | Local-first Terraform engineering assistant |
+| Interface | Python CLI |
+| Primary users | Platform engineers, DevOps engineers, SREs, Terraform consultants, infrastructure teams |
+| Active phase | **Phase 8 — Install once, run from any Terraform project (COMPLETE)** |
+| Core constraint | No `apply`, no `destroy`, no telemetry, no raw-plan persistence |
 
-## 1. The final product we are building
+**Working agreement:** GitHub Copilot implements bounded tasks. ChatGPT supports architecture, Terraform semantics, test strategy, debugging, and independent reasoning. Automated tests—not an AI assertion—establish expected behavior.
 
-The user runs one command against a Terraform plan and, optionally, the Terraform project directory.
+## How to use this document
 
-The tool explains the planned changes, identifies risky operations, investigates replacement causes, checks engineering standards, and proposes fixes with supporting evidence.
+Attach `Plan.md` to implementation prompts. Before coding, verify the active phase and current repository state. Keep this document updated when a phase, constraint, or meaningful architectural decision changes.
 
-Over time, it remembers previous runs locally, identifies recurring infrastructure problems, helps import existing resources, assists with upgrades, and integrates into CI pipelines.
+## 1. Product vision
+TFWhy should help an engineer understand Terraform's proposed changes, investigate why a resource is changing or being replaced, identify risks and standards violations, propose a conservative correction, and check whether the resulting plan matches the intended outcome.
 
-### The product's core promise
+### Core promise
 
-**Understand why Terraform is making a change, determine whether it is safe, and verify whether the proposed fix resolves the problem.**
+Understand why Terraform is planning a change, determine what can and cannot be concluded safely, and verify whether a proposed fix achieves the intended result.
 
-### What the finished CLI should look like
-
+### Product principles
+1. Evidence before explanation. Findings must be grounded in Terraform plan metadata or inspected configuration. Clearly distinguish confirmed facts, likely explanations, and unknown causes.
+2. Deterministic core. Core parsing, rule evaluation, safety classification, and verification must work without AI.
+3. Local-first by default. No telemetry or network transmission in core workflows by default.
+4. Safe by design. Never run terraform apply or terraform destroy. Never silently mutate user configuration.
+5. Privacy by design. Terraform plans can contain sensitive values. Process the input carefully, emit only allowlisted metadata, and never persist raw plans or secrets in history.
+6. Honest uncertainty. Missing or ambiguous evidence must result in an explicit unknown/inconclusive outcome, not a fabricated root cause.
+7. Useful over clever. Prefer small, testable improvements over agent frameworks, unnecessary dependencies, or broad refactors.
+8. Verify outcomes. A successful command or an empty plan is not automatically proof that a proposed refactor is correct. Compare actual behavior with the intended result.
+9. Fix bugs whenever found. A reproducible correctness, security, privacy, or destructive-action bug takes priority over feature work, even if discovered during another phase.
+10. Follow the roadmap. Do not jump to a future feature because it sounds attractive. Complete the current phase's exit criteria first, except for bug fixes and urgent security corrections.
+### Intended long-term CLI experience
+These examples describe the direction of the product; check the current CLI help and implementation before claiming each command or option exists.
 ```bash
 tfwhy explain plan.json
-tfwhy review --plan plan.json --dir ./infra
+tfwhy review --dir ./infra
 tfwhy history
-tfwhy why aws_instance.app
+tfwhy history show <id>
 tfwhy fix --finding TFWHY-001 --dry-run
+tfwhy verify --plan plan.json --from <before> --to <after>
 tfwhy standards check --dir ./infra
+tfwhy why <resource-address>
 ```
-
-These commands represent the intended product interface, not commands that all exist yet.
-
-### What the tool must never do
-
-- Never run `terraform apply` or `terraform destroy`.
-- Never make unapproved changes to the user's files.
-- Never send raw plan JSON, state files, or source code to an AI provider by default.
-- Never store attribute values in plan history.
-- Never claim that a fix is verified unless the relevant checks actually passed.
-- Never present an AI guess as a proven root cause.
-- Never collect telemetry by default.
-
----
-
-## 2. Product architecture
-
-Build one product with several deterministic analyzers underneath it. Do not build one giant AI prompt that attempts to perform every check.
-
+The long-term experience should let an engineer install TFWhy once and run it from any Terraform project directory without entering or cloning the TFWhy source repository. That is a future usability/distribution milestone, not permission to skip the current phase.
+## 2. Non-negotiable safety and privacy rules
+- Never execute terraform apply or terraform destroy.
+- Do not run commands that modify cloud infrastructure.
+- Do not silently change, delete, or overwrite user configuration.
+- Proposed fixes should be shown as diffs or separate files first. Any write operation must be explicit, narrowly scoped, and approved by the user.
+- Do not claim a fix is verified unless the defined checks actually ran and passed.
+- Never claim that replace_paths alone proves the upstream root cause. It identifies a replacement-triggering path, not necessarily why that value changed.
+- Never treat the mere presence of count, for_each, a timestamp, an AMI lookup, a data source, or a random resource as proof of a root cause.
+- Do not print or store raw plan JSON, Terraform state, resource attribute values, environment variables, credentials, or API keys.
+- Do not send plans, state, configuration, or metadata to a remote service by default.
+- Treat plan JSON as sensitive even when the report is sanitized: parsing it means sensitive input may exist in process memory.
+- Use allowlisted metadata extraction. Do not pass complete Terraform change objects into report renderers, logs, history, or future AI prompts.
+- Keep history opt-in. Store only necessary sanitized metadata and provide a clear way to inspect and delete it.
+- Do not add telemetry by default.
+- Do not commit real plan files, state files, credentials, or private employer code.
+- If evidence is incomplete or ambiguous, return Unknown, Inconclusive, or an equivalent honest status.
+## 3. Architecture direction
+Keep the architecture modular and small. Do not build one giant AI prompt that performs all analysis.
 ```text
-                    USER
-                      |
-                 tfwhy CLI
-                      |
-               Input validation
-                      |
-             Plan and code loader
-                      |
-          Metadata extraction boundary
-                      |
-          +-----------+-----------+
-          |           |           |
-      Plan summary  Replacement  Standards
-                    analysis      checks
-          |           |           |
-          +-----------+-----------+
-                      |
-               Normalized findings
-                      |
-              Evidence and severity
-                      |
-             Optional AI explanation
-                      |
-                Report generator
-                      |
-           Terminal / Markdown / JSON
-                      |
-          Proposed fixes and verification
-                      |
-             Local history, later
+CLI / command interface
+        |
+Input validation and safe file handling
+        |
+Plan loader + configuration loader
+        |
+Metadata extraction / sanitization boundary
+        |
+Normalized internal models
+        |
++----------------+------------------+----------------+
+| Plan summary   | Replacement       | Standards and  |
+| and actions    | analysis          | security rules |
++----------------+------------------+----------------+
+        |
+Evidence-backed findings + severity + confidence
+        |
+Fix proposal engine / verification engine
+        |
+Report renderers: terminal / Markdown / JSON
+        |
+Opt-in sanitized local history
+        |
+Future optional AI explanation adapter (not authoritative)
 ```
-
 ### Architecture rules
+- Keep parsing, analysis, verification, presentation, persistence, and external command integration separate enough to test independently.
+- Use shared finding/result models where practical: stable finding ID, severity, resource/file reference, evidence, explanation, recommendation, and confidence/status.
+- Keep raw Terraform values outside normalized findings and renderers.
+- Treat HCL text scanning as potentially ambiguous. Prefer a maintained HCL parser if a demonstrated correctness need justifies the dependency; do not add one without evaluating scope, maintenance, license, and tests.
+- External Terraform commands must be invoked safely, with clear distinction between unavailable tools, validation failures, and successful checks.
+- Do not make AWS credentials or a cloud account prerequisite for analyzing supplied plan JSON or static Terraform configuration.
+- Keep provider/cloud-specific logic optional and separate from the core.
+- Avoid broad refactors during a focused phase. Add abstractions when they solve a demonstrated problem.
+### Likely internal areas
+Names may differ in the actual repository; do not rename modules simply to match this list.
+- CLI and argument handling
+- Plan JSON parsing and metadata extraction
+- Configuration/HCL inspection
+- Plan summary and action classification
+- Replacement analysis and confidence/evidence rules
+- Standards/security rules
+- Fix proposal and verification
+- Sanitized history
+- Report renderers
+- Packaging and tests
+- Future optional AI adapter
+## 4. Current repository status
 
-1. Analyzers must work without AI.
-2. Each analyzer must be independently testable.
-3. All findings must use a shared schema.
-4. Findings must include evidence and explain uncertainty.
-5. The report generator must never receive raw Terraform attribute values.
-6. Fixes must produce diffs or new files, not silently overwrite the user's configuration.
-7. Verification must report its actual result, including failure.
-8. History must store only explicitly approved metadata.
+_Verified against the repository and latest local smoke tests on 2026-10-16. Counts below are evidence from the current workspace, not a permanent guarantee._
 
----
+| Milestone | Status | Evidence |
+| --- | --- | --- |
+| Plan explainer | Complete | Plan actions, replacement metadata, malformed input handling, terminal/Markdown/JSON reports |
+| Replacement analysis | Complete | Conservative paths, action reasons, configuration evidence, confidence states |
+| Standards/security review | Complete | Configurable standards, selected AWS checks, optional Terraform integrations |
+| Fix proposals/verification | Complete | Safe diffs, explicit approval, verified/not-verified/inconclusive outcomes |
+| Local history | Complete | Opt-in sanitized JSON history, recurrence observation, corruption handling |
+| Packaging/release readiness | Complete | Editable install, console entry point, `.gitignore`, GitHub Actions, CLI smoke tests |
 
-## 3. Technology stack
+**Latest evidence:** the full Python suite passes **36 tests**. The corporate-style offline fixture produces a Terraform JSON plan with **22 module-addressed resources**, without AWS credentials or cloud access. Local `pipx install .` and outside-repository CLI smoke tests pass.
 
-| Component | Initial decision |
-|---|---|
-| Language | Python 3.11+ |
-| CLI | Typer or argparse; keep the existing argparse scaffold initially |
-| Testing | pytest, plus security-focused tests |
-| Plan parsing | Python JSON parser with an explicit metadata extraction layer |
-| Terraform configuration | python-hcl2 or another maintained HCL parser, evaluated before integration |
-| Formatting | Terraform's own `terraform fmt` |
-| Validation | `terraform validate` |
-| Standards and security | Existing tools such as TFLint and Trivy, where appropriate |
-| AI | Optional provider adapter; no dependency for core functionality |
-| Reports | Terminal, Markdown and JSON |
-| History | Local SQLite database or versioned JSON records; decide before implementation |
-| CI | GitHub Actions for tests and packaging |
-| Distribution | Python package initially; standalone binaries can come later |
 
-Do not add a dependency just because it is popular. Each dependency must have a clear purpose, a maintained release history, a license compatible with the project, and tests covering our integration.
+> **Evidence note:** Historical milestone labels describe completed scope. Always rerun the current suite and smoke tests before making a new completion claim.
+### Known scope boundaries
+- TFWhy is currently a Python CLI, not yet a polished standalone binary or globally installed end-user experience.
+- Corporate-style testing has been performed using synthetic Terraform configuration and plan JSON without creating AWS resources. Its reported tests passed; use the actual latest test report for details.
+- The user does not require AWS integration to test the current core.
+- Replacement root-cause analysis is intentionally conservative and must not overstate what plan metadata proves.
+- Fix generation supports only the cases implemented and tested; do not imply it can safely refactor arbitrary Terraform.
+- Terraform's own validation/formatting checks depend on the Terraform executable being installed. Distinguish mocked integration tests from real Terraform execution.
+- Current implementation claims must be checked against the code before documentation, marketing, or release claims are made.
+## 5. Roadmap and phase gates
+Only the current phase is active. A future phase may be refined after the previous phase exits, but do not implement it early. Bug fixes and urgent security fixes are always allowed and take priority.
+### Phase 7 — Real-world reliability hardening **(COMPLETE)**
 
----
+**Goal:** Make the existing MVP reliable against realistic Terraform projects without expanding product scope.
 
-## 4. Development roadmap
+**Tasks**
+- [x] Inspect the current code, README, tests, and the completed corporate-style project test results.
+- [x] Reproduce and fix any real defects in plan JSON parsing, unsupported/malformed input, and report rendering.
+- [x] Check replacement evidence and confidence classifications; ambiguous causes must remain unknown.
+- [x] Check nested module addresses, count, for_each, locals, variables, data sources, and configuration matching for false positives or cross-module matches.
+- [x] Check standards/security review rules for material false positives and false negatives.
+- [x] Check fix proposals for unsafe assumptions, unintended overwrites, and incorrect resource-address mappings.
+- [x] Check verification logic against the intended result, including unexpected create/replace/delete operations.
+- [x] Check history privacy, schema validation, corruption behavior, and safe file operations.
+- [x] Add a focused regression test for every reproducible bug fixed.
+- [x] Run the full test suite and relevant CLI smoke tests, including terminal/Markdown/JSON output where relevant.
+- [x] Update docs only when behavior or limitations genuinely change.
+**Constraints:** No new product features, AI, cloud integrations, dependencies, global installation work, or broad refactors. Do not invent bugs to justify the phase. If no meaningful issue is found, leave the code unchanged and record the evidence.
 
-### Phase 0 — Establish the foundation
+**Exit criteria:** Complete. The public-ingress variable-default false negative was fixed with public/private regression coverage; the full suite passes 35 tests; terminal, Markdown, and JSON review output was checked. Computed or indirect variable values remain ambiguous, and module-addressed replacement analysis can remain `Unknown`.
 
-**Goal:** Make the repository reproducible and safe to develop.
+### Phase 8 — Install once, run from any Terraform project **(COMPLETE)**
 
-Tasks:
+**Goal:** Remove the need for engineers to enter or clone the TFWhy repository for everyday use.
 
-- [ ] Create a Git repository.
-- [ ] Add a README, license, `.gitignore`, and contribution notes.
-- [ ] Create a virtual environment and document installation.
-- [ ] Set up automated tests in GitHub Actions.
-- [ ] Add a synthetic Terraform plan fixture.
-- [ ] Ensure plan files, state files, `.env` files, and API keys are excluded from Git.
-- [ ] Add a documented Python version policy.
-- [ ] Record the supported Terraform plan JSON format versions.
-- [ ] Establish a rule that every feature requires tests and acceptance criteria.
+**Current work:**
+- [x] Document editable installation and an individual-developer `pipx` workflow.
+- [x] Ensure the `tfwhy` executable is available after installation; verify through the repository virtual environment.
+- [x] Allow `review` to inspect the caller's current directory when `--dir` is omitted.
+- [x] Preserve explicit plan and project-directory options; `explain` still requires an explicit plan path.
+- [x] Keep history in `~/.tfwhy/history.json` by default, with opt-in saving and `--history-file` override.
+- [x] Document upgrade, troubleshooting, supported Python version, and offline usage.
+- [x] Verify installation through `pipx` from the local repository; no published package exists to test.
+- [ ] Define safe plan discovery only if a demonstrated workflow requires it; do not silently choose an arbitrary plan.
+- [ ] Consider standalone binaries only if user feedback demonstrates a real need.
+**Exit criteria:** Complete for local repository installation. A clean isolated `pipx install .` environment ran `tfwhy --help` and analyzed a synthetic plan from outside the source repository. PyPI installation remains unverified because no package is published.
 
-**Exit criteria:** A fresh checkout can install the package and pass all tests using documented commands.
+### Phase 9 — Improve Terraform configuration understanding **(FUTURE)**
 
-### Phase 1 — Build the plan explainer
+**Goal:** Reduce false positives and improve evidence linking between plan metadata and configuration.
+- [ ] Evaluate HCL parsing versus current scanning based on measured limitations.
+- [ ] Improve module-aware resource matching and source-location reporting.
+- [ ] Trace variable/local/resource references only where the implementation can do so reliably.
+- [ ] Make unsupported expressions and dynamic constructs explicitly uncertain.
+- [ ] Expand fixtures across modules, workspaces/addresses where relevant, count, for_each, data sources, moved blocks, and provider-specific replacement behavior.
+- [ ] Maintain a compatibility matrix for supported plan JSON formats and Terraform versions.
+**Exit criteria:** Improvements are demonstrated by tests that reduce known incorrect classifications without introducing unbounded parsing complexity.
 
-**Goal:** Make Terraform plans easier to understand without using AI.
+### Phase 10 — Import and permission assistance **(FUTURE)**
 
-Tasks:
-
-- [ ] Parse the plan JSON format and validate its structure.
-- [ ] Summarize resources being created, updated, deleted, replaced, read, or left unchanged.
-- [ ] Group results by action and risk.
-- [ ] Identify replacements separately from ordinary updates.
-- [ ] Show resource addresses and types.
-- [ ] Display replacement attribute paths when available.
-- [ ] Identify malformed or unsupported input.
-- [ ] Generate terminal, Markdown, and JSON reports.
-- [ ] Handle empty plans and resource-less plans.
-- [ ] Test unknown actions, missing fields, malformed paths, and unsupported format versions.
-
-**Exit criteria:** The report matches the actions in the input plan and never includes the fixture's attribute values.
-
-### Phase 2 — Build the replacement-cause finder
-
-**Goal:** Explain why a resource is being replaced.
-
-Tasks:
-
-- [ ] Read Terraform's replacement paths when present.
-- [ ] Read supported action-reason metadata.
-- [ ] Associate a replacement path with the relevant resource.
-- [ ] Locate related configuration expressions when a project directory is supplied.
-- [ ] Trace references to variables and expressions where feasible.
-- [ ] Recognize common patterns such as changing AMI lookups, timestamps, random values, and resource addressing changes.
-- [ ] Distinguish confirmed evidence from possible explanations.
-- [ ] Return an explicit confidence level or evidence status.
-- [ ] Report when Terraform does not provide enough information to determine the cause.
-
-**Example result:**
-
-> Resource `aws_instance.app` is scheduled for replacement. Terraform identifies `user_data` as a replacement-triggering attribute. The configuration appears to derive this input from a changing expression. Inspect the expression and its inputs before changing the resource.
-
-Do not claim that a timestamp or AMI lookup is the cause unless the available evidence supports that conclusion.
-
-**Exit criteria:** Every replacement finding includes its evidence, and unsupported root-cause claims are rejected by tests.
-
-### Phase 3 — Add configurable code standards
-
-**Goal:** Review Terraform code consistently.
-
-Initial checks:
-
-- [ ] Required Terraform version constraints.
-- [ ] Provider version constraints.
-- [ ] Missing variable descriptions.
-- [ ] Missing variable validation where appropriate.
-- [ ] Required tags.
-- [ ] Naming conventions.
-- [ ] Basic module structure rules.
-- [ ] Formatting compliance.
-- [ ] Terraform validation.
-- [ ] Optional TFLint and Trivy integrations.
-
-For every rule, record:
-
-- Rule ID.
-- Severity.
-- File and line, where available.
-- Evidence.
-- Why the rule matters.
-- Recommended remediation.
-- Whether the finding is mandatory or advisory.
-
-Avoid writing a replacement for a mature linter. Use our effort on integration, prioritization, and useful explanations.
-
-**Exit criteria:** Each rule has a positive test, a negative test, and a clear explanation.
-
-### Phase 4 — Add safe, verified refactoring
-
-**Goal:** Propose infrastructure refactors and test their consequences.
-
-Start with two cases:
-
-1. Renaming a resource while preserving its identity through an appropriate `moved` block.
-2. Refactoring `count` to `for_each` while preserving the intended resource addresses.
-
-Tasks:
-
-- [ ] Identify the original and intended addresses.
-- [ ] Generate a proposed patch or separate output file.
-- [ ] Show the complete diff before any change is applied.
-- [ ] Require explicit user approval before modifying a working copy.
-- [ ] Run appropriate syntax and validation checks.
-- [ ] Compare the resulting plan with the expected behavior.
-- [ ] Report unexpected creation, replacement, or destruction.
-- [ ] Never automatically apply the plan.
-
-A clean plan is not sufficient proof on its own. A refactor may legitimately change infrastructure, and an empty plan is not always the desired result. Verification must compare the actual result with the expected change.
-
-**Exit criteria:** Tests prove that intended resource identity is preserved in the supported examples and that unexpected destructive changes cause verification to fail.
-
-### Phase 5 — Add local plan history
-
-**Goal:** Make recurring problems visible across runs.
-
-Build this after the first single-plan replacement analyzer works.
-
-Initial history fields:
-
-- Schema version.
-- Timestamp.
-- Terraform version.
-- Plan JSON format version.
-- Resource address.
-- Resource type.
-- Action.
-- Replacement attribute paths.
-- Approved action-reason metadata, where useful.
-
-Do not store raw plans, resource attribute values, environment variables, state files, or credentials.
-
-Tasks:
-
-- [ ] Create a versioned local history format.
-- [ ] Add a retention and deletion policy.
-- [ ] Support listing previous runs.
-- [ ] Compare repeated replacement findings.
-- [ ] Detect recurring replacement paths.
-- [ ] Correlate changes over time without overstating causality.
-- [ ] Handle resource renames and deleted resources.
-- [ ] Make history corruption recoverable.
-- [ ] Add tests for migration between history schema versions.
-
-**Exit criteria:** Given several synthetic runs, the tool identifies repeated replacements and accurately distinguishes recurrence from a proven root cause.
-
-### Phase 6 — Import and permission assistance
-
-**Goal:** Help engineers bring manually created resources under Terraform and identify risky permissions.
-
-Tasks:
-
+**Goal:** Help engineers bring existing resources under Terraform and spot potentially risky permissions.
 - [ ] Generate starter import blocks from explicitly supplied resource information.
-- [ ] Generate starter resource configuration where the inputs are sufficient.
-- [ ] Flag wildcard IAM actions and resources.
-- [ ] Flag overly permissive network rules.
-- [ ] Provide remediation suggestions with evidence.
-- [ ] Avoid claiming a permission is exploitable based solely on a wildcard.
-- [ ] Keep generated code separate until the user approves it.
+- [ ] Generate starter configuration only when required inputs are known.
+- [ ] Flag risky IAM wildcard actions/resources and overly permissive network rules.
+- [ ] Explain why each finding matters and show evidence and remediation options.
+- [ ] Avoid claiming exploitability from a wildcard alone.
+- [ ] Keep generated code separate until explicit user approval.
+- [ ] Add provider/resource-specific tests and document unsupported cases.
+**Exit criteria:** Import suggestions are syntactically plausible for supported examples; permission findings are evidence-based, tested, and appropriately qualified.
 
-**Exit criteria:** Generated import configurations and permission findings are tested against representative examples.
+### Phase 11 — Drift and upgrade assistance **(FUTURE)**
 
-### Phase 7 — Drift and upgrade assistance
+**Goal:** Explain supported drift and version migration cases using plans the user generates.
+- [ ] Accept user-generated refresh-only plans where supported.
+- [ ] Separate planned configuration changes from detected remote changes where the plan format permits it.
+- [ ] Explain possible drift causes without claiming who made a change.
+- [ ] Add supported deprecation and provider migration guidance based on maintained sources/fixtures.
+- [ ] Evaluate Terraform/OpenTofu differences only when there is a concrete testable use case.
+- [ ] Keep compatibility claims versioned and tested.
+Constraints: No default direct AWS access and no automatic infrastructure changes.
+**Exit criteria:** Each supported case has synthetic or reproducible fixtures and clear unknown-case behavior.
 
-**Goal:** Explain configuration drift and version-related problems.
+### Phase 12 — Optional AI explanations **(FUTURE; ONLY AFTER CORE RELIABILITY)**
 
-Tasks:
+**Goal:** Make evidence easier to understand without delegating correctness or safety decisions to an LLM.
+AI is not required for the core product and must not be introduced just to make TFWhy appear more advanced.
+Intended role of AI
+- Explain deterministic findings in plain language.
+- Summarize multiple findings and their relationships when the evidence supports the connection.
+- Help users understand trade-offs between proposed remediations.
+- Answer questions about a finding using only approved evidence supplied for that request.
+AI must not
+- Replace plan parsing, rule evaluation, confidence classification, or verification.
+- Invent root causes or convert unknown evidence into certainty.
+- Execute Terraform, access cloud accounts, apply changes, or autonomously edit files.
+- Receive raw plans, state files, full source trees, credentials, or attribute values by default.
+- Be required for core CLI commands or offline operation.
+Required design and safety gates
+- [ ] Define an explicit provider adapter so the core does not depend on one model vendor.
+- [ ] Keep AI disabled by default and require explicit opt-in before any network request.
+- [ ] Show what sanitized evidence will be sent and to which provider before first use; provide a way to disable AI completely.
+- [ ] Build prompts only from allowlisted, sanitized finding metadata. Never pass the raw plan or full configuration as a convenience.
+- [ ] Redact or omit resource addresses and metadata when they could reveal sensitive information, with controls documented for users.
+- [ ] Treat model output as untrusted text; do not execute returned code or commands.
+- [ ] Require the model to distinguish supplied evidence from interpretation and preserve Unknown/Inconclusive states.
+- [ ] Keep deterministic findings unchanged if the AI provider is unavailable, wrong, or rate-limited.
+- [ ] Add tests with synthetic secret markers, prompt-injection-like content in configuration/comments, malformed model responses, provider failures, and claims unsupported by evidence.
+- [ ] Document data handling, provider retention considerations, costs, and offline alternatives.
+- [ ] Evaluate whether local models are worthwhile only after there is a clear user need and realistic maintenance plan.
+**Exit criteria:** AI is optional, auditable, privacy-aware, tested against unsupported claims, and never authoritative for safety or verification.
 
-- [ ] Accept a refresh-only plan generated by the user.
-- [ ] Separate planned configuration changes from detected remote changes where the plan supports that distinction.
-- [ ] Explain likely drift causes without assuming who made a change.
-- [ ] Detect deprecated arguments and known provider migration issues.
-- [ ] Compare Terraform and OpenTofu behavior where supported.
-- [ ] Maintain a tested compatibility matrix.
+### Phase 13 — CI and pull-request workflows **(FUTURE)**
 
-Do not build direct AWS access into this phase by default. Start with plans the user explicitly generates.
+**Goal:** Bring useful findings into an engineer's normal review workflow.
+- [ ] Add a stable machine-readable output contract and exit-code policy.
+- [ ] Support CI usage without interactive prompts.
+- [ ] Define configurable severity thresholds and failure behavior.
+- [ ] Consider pull-request comments only after local CLI output and finding IDs are stable.
+- [ ] Ensure CI logs do not leak secrets or raw plans.
+- [ ] Test provider failures, permissions, duplicate comments, and noisy findings.
+**Exit criteria:** CI behavior is predictable, configurable, documented, and does not make infrastructure changes.
 
-**Exit criteria:** The tool explains supported drift and upgrade cases using test fixtures and clearly reports unknown cases.
+### Phase 14 — Team and business validation **(FUTURE)**
 
-### Phase 8 — Team and paid features
+**Goal:** Validate demand before building hosted infrastructure or paid features.
+Potential capabilities:
+- Shared standards and policy packs.
+- Team-level history and reports.
+- Pull-request collaboration.
+- Optional hosted AI explanations.
+- Centralized administration, if validated by customers.
+Before implementing a hosted service:
+- [ ] Interview target users and observe real workflows.
+- [ ] Measure repeat usage, false-positive tolerance, trust, and time saved.
+- [ ] Identify a specific problem teams are willing to pay to solve.
+- [ ] Define tenant isolation, data retention, access control, auditability, and deletion requirements.
+- [ ] Reassess the local-first promise and make hosted features clearly optional.
+**Exit criteria:** Real users repeatedly use TFWhy and there is evidence of demand for a specific team feature. Downloads or social engagement alone are not product-market fit.
 
-**Goal:** Validate whether the product can become a business.
+## 6. Testing and release policy
 
-Potential features:
+Every phase and bug fix must follow this policy.
 
-- [ ] Shared standards.
-- [ ] Pull-request comments.
-- [ ] Team-level history.
-- [ ] Centralized reports.
-- [ ] Policy enforcement.
-- [ ] Optional hosted AI explanations.
+### Required test layers
+1. Unit tests: Parsers, analyzers, models, formatters, and helpers.
+2. Golden/fixture tests: Known plans produce expected output.
+3. Regression tests: Every reproducible bug fixed gets a test where practical.
+4. Negative tests: Malformed input, missing fields, unsupported actions/versions, ambiguous configuration, and failed external tools.
+5. Privacy tests: Synthetic secret markers must not appear in reports, logs, history, diffs, or AI payloads.
+6. Integration tests: Synthetic Terraform projects and Terraform-generated plans when Terraform is available.
+7. CLI smoke tests: Commands, output formats, error paths, and exit codes affected by the change.
+8. Packaging tests: Installation and invocation outside the source repository when packaging changes.
+9. Cross-platform/compatibility tests: Expand when supported platforms and versions are declared.
+### Standard completion checklist
+- [ ] Inspect existing code and behavior before changing it.
+- [ ] Reproduce the bug or define measurable acceptance criteria.
+- [ ] Make the smallest effective change.
+- [ ] Add focused tests, including a regression test for each fixed bug where practical.
+- [ ] Run the relevant tests and the full suite.
+- [ ] Run relevant CLI smoke tests.
+- [ ] Review the diff for unrelated changes, secret leakage, unsafe file operations, and misleading claims.
+- [ ] Update documentation only when needed.
+- [ ] Report actual commands and results; never claim tests ran if they did not.
+- [ ] Report remaining limitations and anything that could not be tested.
+If a test cannot run because Terraform or another tool is unavailable, say so clearly. Mocked tests do not prove that the real executable works in that environment.
+### Bug-fix policy
+Bugs are not restricted to a specific roadmap phase. When any prompt, test, or user report reveals a bug:
+1. Determine whether it is reproducible and assess severity.
+2. Fix critical security/privacy/destructive-action bugs immediately and stop unrelated work if necessary.
+3. Fix reproducible correctness bugs with a minimal patch and regression test.
+4. Run the relevant tests and full suite.
+5. If a safe fix is not possible in the current scope, document impact, workaround, and reason for deferral in the phase notes.
+6. Update this plan's current status or decision log when the bug changes scope, constraints, or roadmap decisions.
+Do not leave a known serious bug in place merely because the roadmap says a different phase is active.
+## 7. Working with Copilot and ChatGPT
+Attach this plan.md to repository implementation prompts. Use the following instruction at the top of each prompt:
+Treat plan.md as the source of truth. Inspect the current repository and identify the active phase before coding. Work only on the requested task within that phase. Do not jump to future phases or add unrelated features. Fix reproducible bugs discovered along the way, add regression tests, run relevant tests and the full suite, and report actual results. Never claim unsupported behavior or test results. If this request conflicts with the plan, explain the conflict before making changes. Update plan.md only when the phase status, roadmap, constraints, or an architectural decision genuinely changes.
 
-Keep the core local CLI free initially. Validate actual demand before investing in a hosted service.
-
-**Exit criteria:** Real users repeatedly use the product, identify measurable value, and at least some demonstrate willingness to pay for a specific team feature.
-
----
-
-## 5. Security design — mandatory from day one
-
-This is not a feature to add later.
-
-### Important technical distinction
-
-Terraform plan JSON can contain sensitive values. A parser that loads the JSON processes the original document in memory, even if it never writes those values to a report.
-
-Therefore, the honest security promise is:
-
-- No network transmission in the core CLI.
-- No persistence of raw plans or attribute values.
-- No printing of attribute values.
-- No telemetry by default.
-- Only allowlisted metadata enters findings and reports.
-- Optional AI receives only a deliberately constructed, reviewed payload.
-
-Do not claim that the tool never reads a secret value if it loads the complete plan JSON.
-
-### Security requirements
-
-- [ ] Never serialize raw Terraform change objects into reports.
-- [ ] Use allowlists rather than trying to enumerate every possible secret field.
-- [ ] Never log the input document or exception data that could expose it.
-- [ ] Test that synthetic secret markers never appear in reports, history, or AI payloads.
-- [ ] Treat resource addresses and attribute names as potentially sensitive metadata.
-- [ ] Never commit real plan JSON or Terraform state.
-- [ ] Do not automatically run Terraform commands that could access remote backends without explicit user action.
-- [ ] Keep AI credentials in environment variables or an appropriate secret store.
-- [ ] Do not store API keys in configuration files, logs, or Git.
-- [ ] Make AI calls opt-in and display what information will be sent.
-- [ ] Never run apply or destroy.
-
----
-
-## 6. Testing strategy
-
-Use synthetic infrastructure. Do not deploy to AWS merely to prove the first CLI works.
-
-Create fixtures using local, random, null, and time providers where appropriate. These are useful for exercising Terraform behavior without needing production infrastructure.
-
-### Required test categories
-
-1. **Unit tests:** Individual parsers, analyzers, and report renderers.
-2. **Golden tests:** Known input plans produce expected findings.
-3. **Regression tests:** Every fixed bug becomes a test.
-4. **Security tests:** Secret markers never appear in output or persisted records.
-5. **Malformed-input tests:** Invalid JSON, incomplete objects, unknown actions, and unsupported versions.
-6. **Integration tests:** Real Terraform-generated plans from synthetic projects.
-7. **Cross-platform tests:** macOS, Linux, and Windows.
-8. **Compatibility tests:** Explicitly supported Terraform and OpenTofu versions.
-9. **Fix verification tests:** Expected changes pass; unexpected destructive changes fail.
-
-Every bug discovered by Copilot or ChatGPT must result in a regression test when practical.
-
----
-
-## 7. How to use GitHub Copilot and ChatGPT
-
-### GitHub Copilot: implementation
-
-Give Copilot one bounded task at a time.
-
-For every task:
-
-1. Explain the feature and its constraints.
-2. Ask Copilot to inspect the existing repository before coding.
-3. Provide acceptance criteria.
-4. Ask it to implement the smallest change possible.
-5. Require automated tests.
-6. Ask it to summarize changed files and design choices.
-7. Review the diff.
-8. Run tests and inspect failures.
-9. Commit the change only when the acceptance criteria pass.
-
-Do not ask Copilot to build all eight phases in one prompt.
-
-### ChatGPT: independent review
-
-Bring me:
-
-- The relevant source files or Git diff.
-- Test output.
-- The intended behavior.
-- Any failing examples.
-- Your questions or concerns.
-
-I will review architecture, correctness, test coverage, security boundaries, Terraform semantics, and maintainability. I can also help debug failures and refine the implementation.
-
-Never paste real credentials, production state, raw sensitive plans, or private employer code into a review.
-
-### Git workflow
-
-Use a branch per feature, such as:
-
-- `feature/plan-summary`
-- `feature/replacement-analysis`
-- `feature/standards-review`
-- `feature/verified-refactor`
-
-Keep commits small. This makes regressions easier to isolate and roll back.
-
----
-
-## 8. Definition of done for every feature
-
-A feature is not complete merely because Copilot generated code that runs once.
-
-It is complete only when:
-
-- [ ] Requirements and acceptance criteria are written.
-- [ ] Expected behavior is covered by automated tests.
-- [ ] Negative and malformed inputs are tested.
-- [ ] Security implications are reviewed.
-- [ ] Findings contain evidence.
-- [ ] Unknown cases are handled honestly.
-- [ ] No unexpected files are modified.
-- [ ] Documentation is updated.
-- [ ] The full existing test suite passes.
-- [ ] The diff has been reviewed.
-- [ ] The feature works without AI if it is part of the deterministic core.
-
----
-
-## 9. Product validation and launch
-
-Do not wait until every planned feature exists before showing the product.
-
+### Copilot responsibilities
+- Inspect the current repository and relevant tests first.
+- Implement one bounded task at a time.
+- Make the smallest change that meets acceptance criteria.
+- Include tests and validation in the same task prompt to reduce repeated work.
+- Report files changed, bugs fixed, tests run/passed/failed, smoke-test results, and limitations.
+- Do not mark a phase complete based solely on code generation; use its exit criteria.
+### ChatGPT responsibilities
+- Help interpret behavior, Terraform semantics, architecture trade-offs, failures, and test evidence.
+- Challenge unsupported root-cause claims and unsafe assumptions.
+- Help prepare concise, implementation-ready prompts.
+- Respect the current phase and avoid adding work without a clear reason.
+- Do not request real credentials, production state, sensitive plan JSON, or private employer code.
+### User approval
+The user owns the final decision to accept changes, commit them, release the product, or enable any behavior that writes files or sends data externally.
+## 8. Product validation and success measures
+Do not wait until every future phase exists before showing the product, but do not make broad reliability claims without evidence.
 ### Early validation
+- [ ] Compare summaries against Terraform's own plan output.
+- [ ] Use synthetic plans and realistic multi-module test projects.
+- [ ] Record false positives, false negatives, and unsupported cases.
+- [ ] Compare with existing tools where useful; focus on a better workflow, not duplicating every scanner.
+- [ ] Demonstrate the tool with synthetic infrastructure and sanitized output.
+- [ ] Ask engineers whether the output changes a real decision or saves investigation time.
+### Possible initial success measures
+These are targets, not current achievements:
+- External engineers can install and use TFWhy from their own project directory.
+- At least 10 people outside the creator's immediate team try it.
+- At least 3 users return to use it without prompting.
+- Findings have a tolerable false-positive rate on representative projects.
+- Users can explain why they trust or reject a finding.
+- Reported security or destructive-action bugs are investigated and regression-tested where possible.
+Measure trust, repeat use, and useful time saved—not only downloads or social-media engagement.
+## 9. Deferred decisions and explicit non-goals
+Do not prioritize these until the roadmap and user evidence justify them:
+- A final logo or extensive branding work.
+- A hosted dashboard before validated demand.
+- Direct cloud account access as a core requirement.
+- Automatic Terraform apply/destroy or autonomous infrastructure changes (prohibited).
+- A complex multi-agent framework.
+- AI as a requirement for core features.
+- A proprietary replacement for mature linters without a demonstrated gap.
+- Enterprise authentication, billing, or centralized storage before customer validation.
+- Standalone binaries before the install-once CLI experience is proven and user needs justify them.
+## 10. Decision log and progress tracking
+Update this section only when a meaningful decision, phase transition, or constraint changes. Do not rewrite historical facts to make progress look better.
+| Date | Decision/status | Reason or evidence |
+| --- | --- | --- |
+| 2026-10-16 | Reported milestones 1–6 complete; Phase 7 is current. | Existing CLI capabilities, packaging work, and corporate-style synthetic testing were reported complete. Verify against the current repository and test output. |
+| 2026-10-16 | Phase 7 reliability hardening completed; Phase 8 is current. | Fixed the public-ingress false negative for direct literal variable defaults, added public/private regression tests, and verified 35 passing tests plus terminal/Markdown/JSON review output. Computed or indirect values and module-addressed replacement matching remain intentionally conservative. |
+| 2026-10-16 | Phase 8 completed for local repository distribution. | Isolated `pipx install .` and outside-project CLI smoke passed; `review` defaults to the caller's directory; history stayed in the user data path. No PyPI package exists, so published-package installation remains unverified. |
+| 2026-10-16 | Global/standalone installation is deferred to Phase 8. | The project will follow the agreed phase order instead of jumping ahead. |
+| 2026-10-16 | AI is a future optional layer, not part of the deterministic core. | Privacy, reliability, and evidence quality must come first; AI must not decide safety or verification. |
 
-- [ ] Test it on synthetic plans you understand.
-- [ ] Compare its output with Terraform's own plan output.
-- [ ] Install and evaluate existing tools against the same examples.
-- [ ] Document where tfwhy offers a genuinely better workflow.
-- [ ] Record false positives and unsupported cases.
-- [ ] Share a demonstration using synthetic infrastructure.
 
-### Initial success measures
+## Current next action
 
-These are proposed targets, not evidence of product-market fit:
+Phase 8 is complete for local repository installation. Do not start Phase 9 yet. The only unverified installation path is `pipx install tfwhy` from PyPI because no published package exists. Keep plan discovery explicit and do not add standalone binaries without evidence that they are needed.
 
-- A working version is released with installation instructions.
-- At least 10 people outside your immediate team try it.
-- At least 8 out of 10 representative test projects pass the verified-fix acceptance criteria on the first attempt.
-- At least 3 users return to use it again without prompting.
-- Every reported security or destructive-action bug is investigated and covered by a regression test where possible.
-
-Measure repeat use and trust, not just downloads or social-media engagement.
-
----
-
-## 10. First two weeks: execution checklist
-
-### Week 1 — Reliable foundation
-
-- [ ] Day 1: Set up Git, Python environment, and project conventions.
-- [ ] Day 2: Review the existing starter and make the tests reproducible.
-- [ ] Day 3: Expand synthetic plan fixtures.
-- [ ] Day 4: Finish plan summary and replacement reporting.
-- [ ] Day 5: Test all report formats and privacy boundaries.
-- [ ] Weekend: Compare output against Terraform and review existing tools.
-
-### Week 2 — First differentiating capability
-
-- [ ] Day 1: Define the replacement-finding schema.
-- [ ] Day 2: Parse replacement paths and action reasons.
-- [ ] Day 3: Associate paths with available HCL expressions.
-- [ ] Day 4: Add evidence, uncertainty handling, and regression tests.
-- [ ] Day 5: Run the full test suite and fix defects.
-- [ ] Weekend: Record a short demonstration using synthetic plans and document limitations.
-
-Adjust the schedule to your available hours. Passing the quality gates matters more than finishing on a specific date.
-
----
-
-## 11. Decisions to postpone
-
-Do not spend early development time on:
-
-- A final brand name and logo.
-- A hosted dashboard.
-- Direct cloud account integrations.
-- Automatic Terraform execution.
-- A custom pricing engine.
-- A proprietary scanner for checks existing tools already perform.
-- A complex agent framework.
-- Enterprise authentication and billing before demand is validated.
-
-Focus on the CLI, replacement analysis, standards, and verified fixes first.
-
----
-
-## 12. Immediate next action
-
-Start by reviewing the existing starter repository and making sure its baseline tests pass.
-
-Then implement **Phase 1: Plan Explainer**. Do not start the history database, hosted AI, or refactoring engine yet.
-
-Once Phase 1 is reliable, build the replacement-cause analyzer and its evidence model. That is where the product begins to distinguish itself.
-
-**Working principle:** Copilot writes the implementation; tests establish behavior; independent review challenges assumptions; the user approves every consequential change.
+> **Guiding principle:** Build a trustworthy Terraform engineering tool first, make it easy to install second, add carefully bounded intelligence later, and validate business demand before investing in hosted/team features.

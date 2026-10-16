@@ -96,6 +96,33 @@ resource "aws_ebs_volume" "data_volume" {
             report = review_configuration(config_dir)
         self.assertEqual(report.findings, ())
 
+    def test_public_ingress_from_literal_variable_default_is_detected(self):
+        public_dir = self.write_config('''variable "source_cidr" {
+  default = "0.0.0.0/0"
+}
+
+resource "aws_security_group" "web" {
+  ingress {
+    cidr_blocks = [var.source_cidr]
+  }
+}
+''')
+        private_dir = self.write_config('''variable "source_cidr" {
+  default = "10.0.0.0/8"
+}
+
+resource "aws_security_group" "web" {
+  ingress {
+    cidr_blocks = [var.source_cidr]
+  }
+}
+''')
+        with patch("tfwhy.standards.subprocess.run", side_effect=self.successful_terraform):
+            public_report = review_configuration(public_dir, required_tags=())
+            private_report = review_configuration(private_dir, required_tags=())
+        self.assertIn("TFWHY-SEC-001", {finding.rule_id for finding in public_report.findings})
+        self.assertNotIn("TFWHY-SEC-001", {finding.rule_id for finding in private_report.findings})
+
     def test_missing_terraform_is_info_not_a_security_failure(self):
         config_dir = self.write_config("resource \"null_resource\" \"example\" {}\n")
         with patch("tfwhy.standards.subprocess.run", side_effect=FileNotFoundError):
@@ -146,6 +173,12 @@ resource "aws_ebs_volume" "data_volume" {
             self.assertEqual(result.returncode, 0)
             self.assertNotIn(secret, result.stdout)
             self.assertNotIn(secret, result.stderr)
+
+    def test_review_defaults_to_current_directory(self):
+        config_dir = self.write_config("terraform {}\n")
+        result = subprocess.run([sys.executable, "-m", "tfwhy", "review", "--format", "json"], cwd=config_dir, env={"PYTHONPATH": str(ROOT / "src")}, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('"findings"', result.stdout)
 
 
 if __name__ == "__main__":

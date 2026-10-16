@@ -42,6 +42,8 @@ tfwhy-history.json
 *.tfstate.*
 *.tfplan
 *.plan
+tfplan
+tfplan.json
 plan.json
 *.tfplan.json
 *.tfvars

@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--save-history", action="store_true", help="save sanitized plan metadata locally")
     explain.add_argument("--history-file", type=Path, help="override the local history JSON path")
     review = subparsers.add_parser("review", help="review Terraform configuration standards and security")
-    review.add_argument("--dir", dest="config_dir", type=Path, required=True)
+    review.add_argument("--dir", dest="config_dir", type=Path, default=Path.cwd(), help="Terraform directory to inspect (default: current directory)")
     review.add_argument("--format", choices=("terminal", "markdown", "json"), default="terminal")
     review.add_argument("--required-tag", dest="required_tags", action="append", help="required tag key; repeat for multiple tags")
     review.add_argument("--skip-rule", dest="skip_rules", action="append", default=[], help="skip a rule ID; repeat for multiple rules")

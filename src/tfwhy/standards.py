@@ -17,6 +17,7 @@ _ATTRIBUTE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 _SNAKE_CASE = re.compile(r"^[a-z][a-z0-9_]*$")
 _PUBLIC_IPV4 = re.compile(r"\b0\.0\.0\.0/0\b")
 _PUBLIC_IPV6 = re.compile(r"\b::/0\b")
+_VARIABLE_REFERENCE = re.compile(r"\bvar\.([A-Za-z_][A-Za-z0-9_]*)\b")
 
 
 @dataclass(frozen=True)
@@ -47,10 +48,11 @@ def review_configuration(
     blocks, malformed_files = _load_blocks(config_dir)
     skipped = set(skip_rules)
     required = tuple(required_tags) if required_tags is not None else DEFAULT_REQUIRED_TAGS
+    variable_defaults = _variable_defaults(blocks)
     findings: list[StandardFinding] = []
     findings.extend(_malformed_findings(malformed_files, skipped))
     findings.extend(_version_findings(blocks, skipped))
-    findings.extend(_configuration_findings(blocks, required, skipped))
+    findings.extend(_configuration_findings(blocks, required, skipped, variable_defaults))
     findings.extend(_terraform_tool_findings(config_dir, skipped))
     return StandardsReport(tuple(findings))
 
@@ -119,19 +121,19 @@ def _version_findings(blocks: tuple[_Block, ...], skipped: set[str]) -> list[Sta
     return findings
 
 
-def _configuration_findings(blocks: tuple[_Block, ...], required_tags: tuple[str, ...], skipped: set[str]) -> list[StandardFinding]:
+def _configuration_findings(blocks: tuple[_Block, ...], required_tags: tuple[str, ...], skipped: set[str], variable_defaults: dict[str, str]) -> list[StandardFinding]:
     findings: list[StandardFinding] = []
     for block in blocks:
         if block.kind in {"variable", "output"} and not _has_attribute(block.body, "description") and "TFWHY-DOC-001" not in skipped:
             findings.append(StandardFinding("TFWHY-DOC-001", "Low", str(block.path), f"The {block.kind} block has no description.", "description is absent.", f"Add a description to the {block.kind} block."))
         if block.kind == "resource":
-            findings.extend(_resource_findings(block, required_tags, skipped))
+            findings.extend(_resource_findings(block, required_tags, skipped, variable_defaults))
             if block.second_label and not _SNAKE_CASE.fullmatch(block.second_label) and "TFWHY-NAME-001" not in skipped:
                 findings.append(StandardFinding("TFWHY-NAME-001", "Low", str(block.path), "The resource name does not follow lowercase snake_case.", "The resource label violates the configured basic naming convention.", "Rename the resource using lowercase letters, digits, and underscores."))
     return findings
 
 
-def _resource_findings(block: _Block, required_tags: tuple[str, ...], skipped: set[str]) -> list[StandardFinding]:
+def _resource_findings(block: _Block, required_tags: tuple[str, ...], skipped: set[str], variable_defaults: dict[str, str]) -> list[StandardFinding]:
     findings: list[StandardFinding] = []
     body = block.body
     resource_type = block.first_label or ""
@@ -149,7 +151,7 @@ def _resource_findings(block: _Block, required_tags: tuple[str, ...], skipped: s
 
     if resource_type == "aws_security_group" and "TFWHY-SEC-001" not in skipped:
         ingress_blocks = re.findall(r"\bingress\s*\{(.*?)\}", body, re.DOTALL)
-        if any(_PUBLIC_IPV4.search(ingress) or _PUBLIC_IPV6.search(ingress) for ingress in ingress_blocks):
+        if any(_public_ingress(ingress, variable_defaults) for ingress in ingress_blocks):
             findings.append(StandardFinding("TFWHY-SEC-001", "High", str(block.path), "A security-group ingress rule permits public network access.", "An ingress block contains an unrestricted IPv4 or IPv6 source.", "Restrict ingress sources to the smallest required CIDR ranges and ports."))
 
     if resource_type in {"aws_ebs_volume", "aws_db_instance", "aws_rds_cluster", "aws_s3_bucket"} and "TFWHY-SEC-002" not in skipped:
@@ -183,6 +185,25 @@ def _terraform_tool_findings(config_dir: Path, skipped: set[str]) -> list[Standa
 def _attribute_value(body: str, attribute: str) -> str | None:
     match = re.search(rf"^\s*{re.escape(attribute)}\s*=\s*\"([^\"]+)\"", body, re.MULTILINE)
     return match.group(1) if match else None
+
+
+def _variable_defaults(blocks: tuple[_Block, ...]) -> dict[str, str]:
+    return {
+        block.first_label: default
+        for block in blocks
+        if block.kind == "variable"
+        and block.first_label
+        and (default := _attribute_value(block.body, "default")) is not None
+    }
+
+
+def _public_ingress(ingress: str, variable_defaults: dict[str, str]) -> bool:
+    if _PUBLIC_IPV4.search(ingress) or _PUBLIC_IPV6.search(ingress):
+        return True
+    return any(
+        variable_defaults.get(variable_name) in {"0.0.0.0/0", "::/0"}
+        for variable_name in _VARIABLE_REFERENCE.findall(ingress)
+    )
 
 
 def _has_attribute(body: str, attribute: str) -> bool:

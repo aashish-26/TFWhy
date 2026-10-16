@@ -14,6 +14,28 @@ python -m pip install -e .
 
 No runtime dependency or cloud credential is required.
 
+For an install-once workflow from a published package, use `pipx` after a package is published:
+
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+pipx install tfwhy  # requires a published package
+```
+
+For this local checkout or any unreleased development version, install directly from the repository:
+
+```bash
+pipx install .
+```
+
+Alternatively, use an editable virtual-environment install:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
 The package currently has no declared license. Treat it as unreleased project code until a license decision is made; no open-source license is implied.
 
 ## Quick start
@@ -26,6 +48,55 @@ tfwhy --help
 ```
 
 The console command works from outside the checkout after installation. The full test suite can be run with `python -m unittest discover -s tests -v`.
+
+## Repository Layout
+
+```text
+src/tfwhy/                         Python package and CLI
+tests/                             Unit, integration, and privacy tests
+tests/fixtures/corporate_project/  Provider-free module test project
+tests/fixtures/aws_scanner/       AWS-only static security-review fixture
+.github/workflows/                 Continuous integration
+```
+
+Terraform projects under `tests/fixtures/` are test inputs only. They must not be applied to real infrastructure.
+
+## Run From a Terraform Project
+
+After installation, change to any Terraform project directory and run:
+
+```bash
+tfwhy review
+tfwhy review --format json
+tfwhy explain ./tfplan.json --dir .
+```
+
+Use `--dir PATH` when the configuration is elsewhere. `explain` always requires an explicit plan path; TFWhy does not guess which plan to use. History is opt-in and defaults to `~/.tfwhy/history.json`, never the Terraform project directory. Use `--history-file PATH` for an explicit alternate location.
+
+### Upgrade and troubleshooting
+
+```bash
+pipx upgrade tfwhy       # published-package installs
+pipx uninstall tfwhy
+python -m unittest discover -s tests -v
+```
+
+If `tfwhy` is not found after a `pipx` install, reopen the shell or ensure the pipx bin directory is on `PATH`. `pipx install tfwhy` is not currently verifiable because no PyPI release exists; use `pipx install .` from this checkout. Terraform is optional for plan explanation; `review` reports Terraform formatting/validation as unavailable when the executable is absent. AWS credentials are not required for offline plan JSON analysis.
+
+## Offline Terraform plan fixture
+
+The AWS fixture at `tests/fixtures/aws_scanner/main.tf` is intended for static scanner testing and does not provide credentials. For a complicated corporate-style plan JSON without AWS access, use the provider-free `tests/fixtures/corporate_project/infra/modules/dev` fixture:
+
+```bash
+cd tests/fixtures/corporate_project
+terraform -chdir=infra init -backend=false
+terraform -chdir=infra plan -out=/tmp/tfwhy-corporate.tfplan
+terraform -chdir=infra show -json /tmp/tfwhy-corporate.tfplan > tfplan.json
+tfwhy explain tfplan.json --dir ./infra
+tfwhy review --dir ./infra
+```
+
+It uses Terraform's built-in `terraform_data` resource and the local `random` provider, and creates no cloud resources. The generated `tfplan.json` is ignored by Git. Run `terraform show` with `-chdir=infra` so Terraform can load the provider initialized for that configuration.
 
 ## Usage
 
@@ -90,7 +161,7 @@ Current rule IDs include:
 
 Formatting uses `terraform fmt -check -recursive`; validation uses `terraform validate -no-color`. These commands never apply or destroy infrastructure. If Terraform is not installed, the review reports an informational unavailable-tool finding. TFLint, Trivy, cloud APIs, network calls, and telemetry are not required or used.
 
-The security checks are intentionally narrow and high-confidence. They cover unrestricted IPv4/IPv6 security-group ingress and missing explicit encryption settings for selected AWS storage resources. They are not a comprehensive AWS, Terraform, or policy security scanner. Complex HCL, computed tags, provider defaults, modules, indirect expressions, and unsupported resource types may remain unreported or require manual review.
+The security checks are intentionally narrow and high-confidence. They cover unrestricted IPv4/IPv6 security-group ingress, including direct references to literal variable defaults, and missing explicit encryption settings for selected AWS storage resources. They are not a comprehensive AWS, Terraform, or policy security scanner. Complex HCL, computed tags, provider defaults, modules, indirect expressions, and unsupported resource types may remain unreported or require manual review.
 
 ## Local plan history
 
