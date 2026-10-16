@@ -1,0 +1,56 @@
+{
+  "format_version": "1.0",
+  "terraform_version": "1.6.0",
+  "resource_changes": [
+    {
+      "address": "aws_instance.user_data",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["user_data"]]
+      }
+    },
+    {
+      "address": "aws_instance.ami",
+      "type": "aws_instance",
+      "action_reason": "replace_because_cannot_update",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["ami"]]
+      }
+    },
+    {
+      "address": "aws_instance.random",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["user_data"]]
+      }
+    },
+    {
+      "address": "aws_instance.indexed[\"blue\"]",
+      "previous_address": "aws_instance.indexed[0]",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["ami"]]
+      }
+    },
+    {
+      "address": "aws_instance.unknown",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["tags", "Name"]]
+      }
+    },
+    {
+      "address": "aws_instance.data_source",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["subnet_id"]]
+      }
+    }
+  ]
+}

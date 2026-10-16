@@ -1,0 +1,50 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+pip-wheel-metadata/
+*.log
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Operating system and editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+*.code-workspace
+
+# Local TFWhy data
+.tfwhy/
+tfwhy-history.json
+
+# Terraform state, working directories, plans, and variable files
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+plan.json
+*.tfplan.json
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
