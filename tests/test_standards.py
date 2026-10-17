@@ -11,6 +11,7 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from tfwhy.renderers import render_review_json, render_review_markdown, render_review_terminal  # noqa: E402
+from tfwhy.analyzer import PlanError  # noqa: E402
 from tfwhy.standards import review_configuration  # noqa: E402
 
 
@@ -96,6 +97,36 @@ resource "aws_ebs_volume" "data_volume" {
             report = review_configuration(config_dir)
         self.assertEqual(report.findings, ())
 
+    def test_legacy_terraform_provider_source_has_bounded_migration_guidance(self):
+        legacy_dir = self.write_config('''terraform {
+  required_version = "~> 1.5"
+  required_providers {
+    terraform = {
+      source  = "hashicorp/terraform"
+      version = "~> 2.0"
+    }
+  }
+}
+''')
+        built_in_dir = self.write_config('''terraform {
+  required_version = "~> 1.5"
+  required_providers {
+    terraform = {
+      source  = "terraform.io/builtin/terraform"
+      version = "~> 1.0"
+    }
+  }
+  # source = "hashicorp/terraform"
+}
+''')
+        with patch("tfwhy.standards.subprocess.run", side_effect=self.successful_terraform):
+            legacy = review_configuration(legacy_dir, required_tags=())
+            built_in = review_configuration(built_in_dir, required_tags=())
+        legacy_finding = next(finding for finding in legacy.findings if finding.rule_id == "TFWHY-UPGRADE-001")
+        self.assertEqual(legacy_finding.severity, "Medium")
+        self.assertIn("built-in", legacy_finding.remediation)
+        self.assertNotIn("TFWHY-UPGRADE-001", {finding.rule_id for finding in built_in.findings})
+
     def test_public_ingress_from_literal_variable_default_is_detected(self):
         public_dir = self.write_config('''variable "source_cidr" {
   default = "0.0.0.0/0"
@@ -122,6 +153,84 @@ resource "aws_security_group" "web" {
             private_report = review_configuration(private_dir, required_tags=())
         self.assertIn("TFWHY-SEC-001", {finding.rule_id for finding in public_report.findings})
         self.assertNotIn("TFWHY-SEC-001", {finding.rule_id for finding in private_report.findings})
+
+    def test_iam_and_network_permission_findings_are_static_and_evidence_backed(self):
+        config_dir = ROOT / "tests" / "fixtures" / "phase10_permissions"
+        with patch("tfwhy.standards.subprocess.run", side_effect=self.successful_terraform):
+            report = review_configuration(config_dir, required_tags=())
+        by_rule = {finding.rule_id: finding for finding in report.findings}
+        self.assertEqual(by_rule["TFWHY-IAM-001"].severity, "Medium")
+        self.assertEqual(by_rule["TFWHY-IAM-002"].severity, "Medium")
+        self.assertEqual(by_rule["TFWHY-NET-002"].severity, "Medium")
+        self.assertEqual(by_rule["TFWHY-NET-003"].severity, "Medium")
+        self.assertIn("does not establish", by_rule["TFWHY-NET-003"].evidence.lower())
+
+    def test_deny_and_narrow_or_computed_permissions_are_not_flagged(self):
+        config_dir = self.write_config('''resource "aws_iam_policy" "narrow" {
+  policy = jsonencode({
+    Statement = [
+      {
+        Effect   = "Deny"
+        Action   = "*"
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::example/*"
+      }
+    ]
+  })
+}
+
+resource "aws_security_group" "limited_egress" {
+  egress {
+    protocol    = "tcp"
+    from_port   = 443
+    to_port     = 443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_network_acl_rule" "private_ssh" {
+  egress      = false
+  rule_action = "allow"
+  protocol    = "tcp"
+  cidr_block  = var.admin_cidr
+  from_port   = 22
+}
+''')
+        with patch("tfwhy.standards.subprocess.run", side_effect=self.successful_terraform):
+            report = review_configuration(config_dir, required_tags=())
+        new_rules = {"TFWHY-IAM-001", "TFWHY-IAM-002", "TFWHY-NET-002", "TFWHY-NET-003"}
+        self.assertFalse(new_rules & {finding.rule_id for finding in report.findings})
+
+    def test_permission_fixture_and_interpolation_braces_are_scanned_without_policy_leaks(self):
+        config_dir = self.write_config('''resource "aws_iam_policy" "interpolated" {
+  policy = jsonencode({
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "${aws_s3_bucket.logs.arn}/*"
+    }]
+  })
+}
+
+resource "aws_iam_policy" "wildcard" {
+  policy = jsonencode({
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "*"
+      Resource = "*"
+    }]
+  })
+}
+''')
+        with patch("tfwhy.standards.subprocess.run", side_effect=self.successful_terraform):
+            report = review_configuration(config_dir, required_tags=())
+        wildcard_findings = [finding for finding in report.findings if finding.rule_id.startswith("TFWHY-IAM-")]
+        self.assertEqual(len(wildcard_findings), 2)
+        self.assertNotIn("aws_s3_bucket.logs.arn", json.dumps(report.as_dict()))
 
     def test_missing_terraform_is_info_not_a_security_failure(self):
         config_dir = self.write_config("resource \"null_resource\" \"example\" {}\n")
@@ -179,6 +288,11 @@ resource "aws_security_group" "web" {
         result = subprocess.run([sys.executable, "-m", "tfwhy", "review", "--format", "json"], cwd=config_dir, env={"PYTHONPATH": str(ROOT / "src")}, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0)
         self.assertIn('"findings"', result.stdout)
+
+    def test_blank_required_tag_is_rejected_instead_of_becoming_a_finding(self):
+        config_dir = self.write_config('resource "aws_s3_bucket" "logs" {}\n')
+        with self.assertRaisesRegex(PlanError, "non-empty"):
+            review_configuration(config_dir, required_tags=("",))
 
 
 if __name__ == "__main__":

@@ -69,6 +69,7 @@ After installation, change to any Terraform project directory and run:
 tfwhy review
 tfwhy review --format json
 tfwhy explain ./tfplan.json --dir .
+tfwhy drift ./tfplan.json
 ```
 
 Use `--dir PATH` when the configuration is elsewhere. `explain` always requires an explicit plan path; TFWhy does not guess which plan to use. History is opt-in and defaults to `~/.tfwhy/history.json`, never the Terraform project directory. Use `--history-file PATH` for an explicit alternate location.
@@ -105,8 +106,12 @@ tfwhy explain plan.json
 tfwhy explain plan.json --format markdown
 tfwhy explain plan.json --format json
 tfwhy explain plan.json --dir ./infra
+tfwhy drift plan.json
+tfwhy drift plan.json --format json
 tfwhy review --dir ./infra
 tfwhy review --dir ./infra --required-tag Environment --skip-rule TFWHY-SEC-002
+tfwhy import --address aws_s3_bucket.logs --id example-logs --starter-config
+tfwhy import --address aws_s3_bucket.logs --id example-logs --starter-config --out ./tfwhy-import.tf --apply --approve
 tfwhy fix --finding TFWHY-001 --plan plan.json --dir ./infra --dry-run
 tfwhy verify --plan after-change-plan.json --from aws_instance.old --to aws_instance.new --kind resource_rename
 tfwhy explain plan.json --save-history
@@ -117,13 +122,28 @@ tfwhy history clear --confirm
 
 The current implementation supports Terraform plan JSON format versions with major version `1` and a numeric `MINOR` component, such as `1.0` and newer compatible `1.x` versions. It rejects malformed versions and unsupported major versions, such as `2.0`; accepting a newer minor version does not claim support for a different major version. It reports create, update, delete, replacement, read, and no-op resources, including addresses, types, replacement paths, and supported action reasons: `replace_because_cannot_update`, `replace_because_tainted`, `replace_by_request`, `delete_because_no_move`, `read_because_config_unknown`, `read_because_dependency_pending`, and `read_because_deferred`.
 
+| Compatibility surface | Exercised support | Boundary |
+| --- | --- | --- |
+| Plan JSON format | `1.0`, `1.1`, and other numeric `1.x` minors | Major versions other than `1` are rejected. |
+| Terraform version metadata | Synthetic `1.6.0` and `1.9.0` metadata | The version is reported, not evaluated for provider behavior. |
+| Remote-drift metadata | Optional `resource_drift` and structural `relevant_attributes` in format `1.x` | Ordinary `resource_changes` are never inferred to be remote drift. |
+| Configuration evidence | Root module and literal local child-module sources under `--dir` | Remote, computed, and local sources outside `--dir` remain inconclusive. |
+
 Replacement paths are evidence supplied by Terraform; `tfwhy` does not infer a root cause from them. Unknown action reasons are omitted rather than presented as supported evidence. Invalid JSON, unsupported versions, missing required fields, and malformed resource changes produce an error and non-zero exit status.
+
+## Drift assistance
+
+`tfwhy drift PLAN.json` is a local reader for Terraform's optional `resource_drift` plan metadata. It never refreshes state, queries a provider, accesses a cloud account, or needs credentials. The same safe drift findings also appear in `tfwhy explain` output, after the separate list of planned resource changes.
+
+Terraform can report a resource in both `resource_changes` and `resource_drift`. TFWhy reports that overlap and any structural `relevant_attributes` paths as correlation only: neither proves that drift caused a planned action, who changed a remote object, or that the plan was generated with `terraform plan -refresh-only`. Terraform's JSON plan format has no supported refresh-only-mode marker that TFWhy relies on. If `resource_drift` is absent, TFWhy reports no detected remote drift rather than guessing from normal actions. Raw before/after values are not retained or rendered.
+
+The supported drift path is a user-generated plan that Terraform has already produced, including refresh-only plans when their JSON contains `resource_drift`. OpenTofu behavior is not claimed or specially handled because this repository has no reproduced OpenTofu JSON compatibility case.
 
 ## Security and limitations
 
 Reports and CLI errors contain only an explicit allowlist of plan metadata and safe structural diagnostics. They never include Terraform before/after values, sensitive values, complete change objects, or raw plan content. Terraform plan JSON can itself contain sensitive data, so reading a plan necessarily processes that input in memory. The core CLI makes no network calls and never runs `terraform apply` or `terraform destroy`.
 
-This release does not fully evaluate Terraform configuration, resolve modules or variables, determine replacement root causes conclusively, run Terraform validation outside the Phase 3 review command, or verify fixes. The optional Phase 2 scanner only inspects conservative configuration evidence.
+This release does not fully evaluate Terraform configuration, resolve arbitrary modules or variables, determine replacement root causes conclusively, run Terraform validation outside the Phase 3 review command, or verify fixes. The configuration scanner only inspects bounded, conservative evidence.
 
 ## Replacement-cause analysis
 
@@ -133,7 +153,9 @@ When a replacement is present, `tfwhy` emits a replacement finding with the reso
 - **Likely** means an optional configuration directory contains a matching resource block and a recognizable timestamp, random-value, AMI/data-source, `user_data`, `count`, or `for_each` pattern.
 - **Unknown** means the plan or available configuration does not provide enough evidence to identify an upstream cause. A replacement path alone is never treated as proof of that cause.
 
-Configuration inspection is a small, dependency-free scanner for unambiguous root-module `resource` blocks in top-level `.tf` files. Module-addressed resources and duplicate type/name matches deliberately remain **Unknown**. It records only relative file paths, line numbers, attribute names, and recognized pattern labels. It does not evaluate HCL, resolve variables or modules, compare before/after values, inspect state, or prove that an expression changed. Complex HCL, generated configuration, moved blocks, provider behavior, and indirect dependencies may therefore remain **Unknown**.
+Configuration inspection is a small, dependency-free, HCL-aware scanner. It matches the complete resource address (after removing instance indexes), including literal local child-module sources beneath `--dir`; resources with the same type and name in different modules are not cross-matched. It records only relative file paths, line numbers, attribute names, and recognized pattern labels. For a direct, single-line expression it can link an attribute to a variable default, local, data source, or managed-resource declaration and report the relevant source locations. A data source or dynamic timestamp/random expression is only a possible cause; a managed-resource reference is evidence of a link, not proof that its value changed.
+
+The scanner is not a Terraform language evaluator and deliberately has no HCL-parser dependency. Conditional and multiline expressions, functions other than the recognized dynamic patterns, computed defaults, module outputs, remote or computed module sources, local modules outside `--dir`, generated configuration, and indirect dependency graphs remain **Unknown**. `count`, `for_each`, indexed addresses, and `moved` blocks are recorded only as contextual metadata and never establish a replacement cause. Terraform behavior, state, and before/after values are not evaluated or exposed.
 
 ## Standards and security review
 
@@ -155,13 +177,34 @@ Current rule IDs include:
 - `TFWHY-NAME-001`: basic lowercase snake_case naming violation.
 - `TFWHY-SEC-001`: public security-group ingress detected.
 - `TFWHY-SEC-002`: supported storage resource lacks explicit encryption configuration.
+- `TFWHY-IAM-001`, `TFWHY-IAM-002`: statically visible IAM Allow action or resource wildcards.
+- `TFWHY-NET-002`: unrestricted all-protocol security-group egress.
+- `TFWHY-NET-003`: public network-ACL SSH/RDP or all-protocol ingress.
+- `TFWHY-UPGRADE-001`: literal `hashicorp/terraform` provider source, which HashiCorp documents as legacy and incompatible with Terraform 0.11 and later.
 - `TFWHY-FMT-001`, `TFWHY-VALIDATE-001`: Terraform formatting or validation failed.
 - `TFWHY-TOOL-001`: Terraform is unavailable, so Terraform-dependent checks were skipped; this is informational, not a security finding.
 - `TFWHY-CONFIG-001`: configuration file could not be safely scanned.
 
 Formatting uses `terraform fmt -check -recursive`; validation uses `terraform validate -no-color`. These commands never apply or destroy infrastructure. If Terraform is not installed, the review reports an informational unavailable-tool finding. TFLint, Trivy, cloud APIs, network calls, and telemetry are not required or used.
 
-The security checks are intentionally narrow and high-confidence. They cover unrestricted IPv4/IPv6 security-group ingress, including direct references to literal variable defaults, and missing explicit encryption settings for selected AWS storage resources. They are not a comprehensive AWS, Terraform, or policy security scanner. Complex HCL, computed tags, provider defaults, modules, indirect expressions, and unsupported resource types may remain unreported or require manual review.
+The security checks are intentionally narrow and high-confidence. They cover unrestricted IPv4/IPv6 security-group ingress, including direct references to literal variable defaults; all-protocol unrestricted security-group egress; statically visible public network-ACL SSH/RDP or all-protocol ingress; missing explicit encryption settings for selected AWS storage resources; and literal IAM `Allow` statements with global or service action wildcards or a global resource wildcard. These findings identify potentially broad permissions, not reachability or exploitability. They are not a comprehensive AWS, Terraform, or policy security scanner. Complex HCL, computed tags, provider defaults, modules, indirect expressions, IAM policy documents outside supported `jsonencode` literals, and unsupported resource types may remain unreported or require manual review.
+
+The upgrade check is intentionally a single, source-backed migration rule: it recognizes only a literal line declaring `source = "hashicorp/terraform"` within `required_providers`. Its remediation is to remove that legacy requirement and review use of Terraform's built-in provider features; it does not rewrite configuration or infer a provider-version upgrade path. Comments, computed sources, arbitrary deprecated arguments, provider schemas, and OpenTofu-specific migrations remain unsupported. See HashiCorp's [provider requirements documentation](https://developer.hashicorp.com/terraform/language/providers/requirements) for the legacy-provider compatibility statement.
+
+## Import proposals
+
+`tfwhy import` creates a reviewable Terraform `import` block only from the address and identifier you explicitly provide. It never queries a cloud account, state file, or provider API.
+
+```bash
+# Preview a unified diff; no file is written.
+tfwhy import --address aws_s3_bucket.logs --id example-logs --starter-config
+
+# Writing requires a new, explicit path plus both approval flags.
+tfwhy import --address aws_s3_bucket.logs --id example-logs --starter-config \
+  --out ./tfwhy-import.tf --apply --approve
+```
+
+The initial starter-configuration support is intentionally limited to a root, unindexed `aws_s3_bucket`: its supplied import ID is its bucket name. Other supported managed-resource addresses receive an import block but no guessed resource body; the report explains that provider-specific required arguments are missing. Module instances, `count`/`for_each` targets, data sources, malformed addresses, cloud discovery, state inspection, and arbitrary provider schemas are unsupported. The import identifier appears only in the user-requested generated diff or file and is never saved to history; avoid placing secrets in an import identifier.
 
 ## Local plan history
 

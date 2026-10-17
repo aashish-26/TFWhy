@@ -42,6 +42,15 @@ class PlanExplainerTests(unittest.TestCase):
         (directory / "main.tf").write_text(content, encoding="utf-8")
         return directory
 
+    def write_project(self, files):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(directory, ignore_errors=True))
+        for relative_path, content in files.items():
+            target = directory / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        return directory
+
     def test_replacement_fixture_identifies_supported_patterns_and_unknowns(self):
         summary = analyze_replacements(
             load_plan(ROOT / "tests" / "fixtures" / "replacement_plan.json"),
@@ -62,8 +71,8 @@ class PlanExplainerTests(unittest.TestCase):
         self.assertIn("data source", findings["aws_instance.ami"].explanation)
         self.assertEqual(findings["aws_instance.random"].confidence, "Likely")
         self.assertIn("random", findings["aws_instance.random"].explanation)
-        self.assertEqual(findings["aws_instance.indexed[\"blue\"]"].confidence, "Likely")
-        self.assertIn("addressing changed", findings["aws_instance.indexed[\"blue\"]"].explanation)
+        self.assertEqual(findings["aws_instance.indexed[\"blue\"]"].confidence, "Unknown")
+        self.assertIn("does not establish", " ".join(findings["aws_instance.indexed[\"blue\"]"].evidence))
         self.assertEqual(findings["aws_instance.unknown"].confidence, "Unknown")
         self.assertIn("insufficient", findings["aws_instance.unknown"].explanation)
         self.assertEqual(findings["aws_instance.data_source"].confidence, "Likely")
@@ -156,6 +165,13 @@ class PlanExplainerTests(unittest.TestCase):
                 summary = load_plan(self.write_plan(plan(format_version=format_version)))
                 self.assertEqual(summary.format_version, format_version)
 
+    def test_phase9_format_1_1_fixture_preserves_safe_module_metadata(self):
+        summary = load_plan(ROOT / "tests" / "fixtures" / "phase9_plan_1_1.json")
+        self.assertEqual(summary.format_version, "1.1")
+        self.assertEqual(summary.terraform_version, "1.9.0")
+        self.assertEqual(summary.resources[0].address, "module.child.aws_instance.app")
+        self.assertEqual(summary.resources[0].category, "replace")
+
     def test_plan_errors_do_not_echo_plan_derived_values(self):
         secret = "SYNTHETIC_SECRET_MARKER"
         malformed = plan([{"address": secret, "type": "aws_instance"}])
@@ -221,19 +237,19 @@ class PlanExplainerTests(unittest.TestCase):
                 self.assertNotIn("timestamp()", result.stdout)
                 self.assertNotIn("data.aws_ami.base.id", result.stdout)
 
-        def test_repetition_presence_alone_stays_unknown(self):
-                config_dir = self.write_config('''resource "aws_instance" "app" {
+    def test_repetition_presence_alone_stays_unknown(self):
+        config_dir = self.write_config('''resource "aws_instance" "app" {
     for_each = var.instances
     ami      = var.ami
 }
 ''')
-                summary = analyze_replacements(load_plan(self.write_plan(plan([
-                        resource("aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["ami"]])
-                ]))), config_dir)
-                self.assertEqual(summary.replacement_findings[0].confidence, "Unknown")
+        summary = analyze_replacements(load_plan(self.write_plan(plan([
+            resource("aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["ami"]])
+        ]))), config_dir)
+        self.assertEqual(summary.replacement_findings[0].confidence, "Unknown")
 
-        def test_ambiguous_and_module_matches_stay_unknown(self):
-                duplicate_dir = self.write_config('''resource "aws_instance" "app" {
+    def test_ambiguous_duplicate_matches_stay_unknown(self):
+        duplicate_dir = self.write_config('''resource "aws_instance" "app" {
     user_data = timestamp()
 }
 
@@ -241,18 +257,116 @@ resource "aws_instance" "app" {
     user_data = random_id.value.hex
 }
 ''')
-                duplicate_summary = analyze_replacements(load_plan(self.write_plan(plan([
-                        resource("aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]])
-                ]))), duplicate_dir)
-                self.assertEqual(duplicate_summary.replacement_findings[0].confidence, "Unknown")
+        duplicate_summary = analyze_replacements(load_plan(self.write_plan(plan([
+            resource("aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]])
+        ]))), duplicate_dir)
+        self.assertEqual(duplicate_summary.replacement_findings[0].confidence, "Unknown")
 
-                module_summary = analyze_replacements(load_plan(self.write_plan(plan([
-                        resource("module.child.aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]])
-                ]))), self.write_config('''resource "aws_instance" "app" {
-    user_data = timestamp()
+    def test_interpolation_braces_do_not_cross_match_a_later_resource(self):
+        config_dir = self.write_config('''resource "aws_instance" "app" {
+  user_data = "stable ${var.label}"
 }
-'''))
-                self.assertEqual(module_summary.replacement_findings[0].confidence, "Unknown")
+
+resource "aws_instance" "unrelated" {
+  user_data = timestamp()
+}
+''')
+        summary = analyze_replacements(load_plan(self.write_plan(plan([
+            resource("aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]])
+        ]))), config_dir)
+        finding = summary.replacement_findings[0]
+        self.assertEqual(finding.confidence, "Unknown")
+        self.assertNotIn("timestamp", " ".join(finding.evidence))
+
+    def test_module_aware_matching_uses_the_called_local_module_only(self):
+        config_dir = self.write_project({
+            "main.tf": '''module "dynamic" {
+  source = "./modules/dynamic"
+}
+
+module "static" {
+  source = "./modules/static"
+}
+''',
+            "modules/dynamic/main.tf": '''resource "aws_instance" "app" {
+  user_data = timestamp()
+}
+''',
+            "modules/static/main.tf": '''resource "aws_instance" "app" {
+  user_data = "stable"
+}
+''',
+        })
+        summary = analyze_replacements(load_plan(self.write_plan(plan([
+            resource("module.dynamic.aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]]),
+            resource("module.static.aws_instance.app", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]]),
+        ]))), config_dir)
+        findings = {finding.address: finding for finding in summary.replacement_findings}
+        self.assertEqual(findings["module.dynamic.aws_instance.app"].confidence, "Likely")
+        self.assertIn("modules/dynamic/main.tf:2", " ".join(findings["module.dynamic.aws_instance.app"].evidence))
+        self.assertEqual(findings["module.static.aws_instance.app"].confidence, "Unknown")
+
+    def test_direct_variable_local_and_resource_references_include_source_locations(self):
+        config_dir = self.write_config('''variable "image_id" {
+  default = data.aws_ami.base.id
+}
+
+locals {
+  selected_image = var.image_id
+}
+
+resource "terraform_data" "seed" {
+  input = "stable"
+}
+
+resource "aws_instance" "from_local" {
+  ami = local.selected_image
+}
+
+resource "aws_instance" "from_resource" {
+  user_data = terraform_data.seed.output
+}
+''')
+        summary = analyze_replacements(load_plan(self.write_plan(plan([
+            resource("aws_instance.from_local", "aws_instance", ["delete", "create"], replace_paths=[["ami"]]),
+            resource("aws_instance.from_resource", "aws_instance", ["delete", "create"], replace_paths=[["user_data"]]),
+        ]))), config_dir)
+        findings = {finding.address: finding for finding in summary.replacement_findings}
+        local_finding = findings["aws_instance.from_local"]
+        self.assertEqual(local_finding.confidence, "Likely")
+        self.assertIn("directly references local selected_image", " ".join(local_finding.evidence))
+        self.assertIn("directly references variable image_id", " ".join(local_finding.evidence))
+        self.assertIn("main.tf:2", " ".join(local_finding.evidence))
+        resource_finding = findings["aws_instance.from_resource"]
+        self.assertEqual(resource_finding.confidence, "Unknown")
+        self.assertIn("directly references resource declared at main.tf:9", " ".join(resource_finding.evidence))
+
+    def test_count_for_each_moved_and_indirect_expressions_remain_unknown(self):
+        config_dir = self.write_config('''moved {
+  from = aws_instance.old
+  to   = aws_instance.counted["blue"]
+}
+
+resource "aws_instance" "counted" {
+  count = 1
+  ami   = var.choose_dynamic ? data.aws_ami.base.id : var.ami
+}
+
+resource "aws_instance" "each" {
+  for_each = var.instances
+  ami      = var.ami
+}
+''')
+        summary = analyze_replacements(load_plan(self.write_plan(plan([
+            resource("aws_instance.counted[\"blue\"]", "aws_instance", ["delete", "create"], previous_address="aws_instance.counted[0]", replace_paths=[["ami"]]),
+            resource("aws_instance.each[\"blue\"]", "aws_instance", ["delete", "create"], replace_paths=[["ami"]]),
+        ]))), config_dir)
+        findings = {finding.address: finding for finding in summary.replacement_findings}
+        self.assertEqual(findings["aws_instance.counted[\"blue\"]"].confidence, "Unknown")
+        self.assertIn("declares count", " ".join(findings["aws_instance.counted[\"blue\"]"].evidence))
+        self.assertNotIn("data source", findings["aws_instance.counted[\"blue\"]"].explanation)
+        self.assertEqual(findings["aws_instance.each[\"blue\"]"].confidence, "Unknown")
+        self.assertIn("declares for_each", " ".join(findings["aws_instance.each[\"blue\"]"].evidence))
 
 
 if __name__ == "__main__":

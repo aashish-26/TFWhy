@@ -9,10 +9,12 @@ from pathlib import Path
 from .analyzer import PlanError, load_plan
 from .fixes import FixError, apply_proposal, propose_fix, verify_plan
 from .history import HistoryError, clear_history, default_history_path, list_history, save_history, show_history
+from .imports import ImportError, apply_import_proposal, propose_import
 from .replacement import analyze_replacements
-from .renderers import render_json, render_markdown, render_terminal
+from .renderers import render_drift_json, render_drift_markdown, render_drift_terminal, render_json, render_markdown, render_terminal
 from .renderers import render_review_json, render_review_markdown, render_review_terminal
 from .renderers import render_fix_json, render_fix_markdown, render_fix_terminal, render_verification_json, render_verification_markdown, render_verification_terminal
+from .renderers import render_import_json, render_import_markdown, render_import_terminal
 from .renderers import render_history_json, render_history_markdown, render_history_terminal
 from .standards import review_configuration
 
@@ -26,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--format", choices=("terminal", "markdown", "json"), default="terminal")
     explain.add_argument("--save-history", action="store_true", help="save sanitized plan metadata locally")
     explain.add_argument("--history-file", type=Path, help="override the local history JSON path")
+    drift = subparsers.add_parser("drift", help="report Terraform-detected remote drift from a plan JSON file")
+    drift.add_argument("plan", type=Path, help="user-generated Terraform plan JSON")
+    drift.add_argument("--format", choices=("terminal", "markdown", "json"), default="terminal")
     review = subparsers.add_parser("review", help="review Terraform configuration standards and security")
     review.add_argument("--dir", dest="config_dir", type=Path, default=Path.cwd(), help="Terraform directory to inspect (default: current directory)")
     review.add_argument("--format", choices=("terminal", "markdown", "json"), default="terminal")
@@ -39,6 +44,14 @@ def build_parser() -> argparse.ArgumentParser:
     fix.add_argument("--dry-run", action="store_true", help="show the proposal without writing files (default)")
     fix.add_argument("--apply", action="store_true", help="write the proposed moved.tf after explicit approval")
     fix.add_argument("--approve", action="store_true", help="explicitly approve --apply")
+    import_command = subparsers.add_parser("import", help="propose a Terraform import block from explicit input")
+    import_command.add_argument("--address", required=True, help="managed Terraform resource address to import")
+    import_command.add_argument("--id", dest="import_id", required=True, help="provider import identifier supplied by the user")
+    import_command.add_argument("--out", type=Path, help="new file path to write only with --apply --approve")
+    import_command.add_argument("--starter-config", action="store_true", help="include a starter resource block only for supported resource types")
+    import_command.add_argument("--apply", action="store_true", help="write the proposal to --out after explicit approval")
+    import_command.add_argument("--approve", action="store_true", help="explicitly approve --apply")
+    import_command.add_argument("--format", choices=("terminal", "markdown", "json"), default="terminal")
     verify = subparsers.add_parser("verify", help="verify an intended Terraform refactoring from a plan")
     verify.add_argument("--plan", type=Path, required=True)
     verify.add_argument("--from", dest="from_address", required=True)
@@ -73,6 +86,17 @@ def main(argv: list[str] | None = None) -> int:
         renderer = {"terminal": render_terminal, "markdown": render_markdown, "json": render_json}[args.format]
         print(renderer(summary), end="")
         return 0
+    if args.command == "drift":
+        try:
+            # The loader extracts only Terraform's optional resource_drift
+            # metadata. This command never refreshes state or contacts a cloud.
+            summary = load_plan(args.plan)
+        except PlanError as exc:
+            print(f"tfwhy: error: {exc}", file=sys.stderr)
+            return 2
+        renderer = {"terminal": render_drift_terminal, "markdown": render_drift_markdown, "json": render_drift_json}[args.format]
+        print(renderer(summary), end="")
+        return 0
     if args.command == "review":
         try:
             report = review_configuration(args.config_dir, args.required_tags, args.skip_rules)
@@ -96,6 +120,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"tfwhy: error: {exc}", file=sys.stderr)
             return 2
         renderer = {"terminal": render_fix_terminal, "markdown": render_fix_markdown, "json": render_fix_json}[args.format]
+        print(renderer(proposal), end="")
+        return 0
+    if args.command == "import":
+        try:
+            # Import generation is preview-first. Both flags and a new target
+            # path are needed before the proposal may create a local file.
+            if args.apply and not args.approve:
+                raise ImportError("--apply requires explicit --approve")
+            if args.apply and args.out is None:
+                raise ImportError("--apply requires an explicit --out path")
+            proposal = propose_import(args.address, args.import_id, args.out, args.starter_config)
+            if args.apply:
+                apply_import_proposal(proposal)
+        except ImportError as exc:
+            print(f"tfwhy: error: {exc}", file=sys.stderr)
+            return 2
+        renderer = {"terminal": render_import_terminal, "markdown": render_import_markdown, "json": render_import_json}[args.format]
         print(renderer(proposal), end="")
         return 0
     if args.command == "verify":

@@ -1,0 +1,15 @@
+{
+  "format_version": "1.1",
+  "terraform_version": "1.9.0",
+  "resource_changes": [
+    {
+      "address": "module.child.aws_instance.app",
+      "mode": "managed",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["delete", "create"],
+        "replace_paths": [["user_data"]]
+      }
+    }
+  ]
+}

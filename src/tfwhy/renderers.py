@@ -7,11 +7,25 @@ import json
 from .analyzer import PlanSummary
 from .fixes import FixProposal, VerificationResult
 from .history import HistoryError
+from .imports import ImportProposal
 from .standards import StandardsReport
 
 
 def render_json(summary: PlanSummary) -> str:
     return json.dumps(summary.as_dict(), indent=2, sort_keys=True) + "\n"
+
+
+def render_drift_json(summary: PlanSummary) -> str:
+    """Render only remote-drift metadata for the dedicated drift command."""
+    return json.dumps(
+        {
+            "format_version": summary.format_version,
+            "terraform_version": summary.terraform_version,
+            "drift_findings": [finding.__dict__ for finding in summary.drift_findings],
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
 
 
 def render_markdown(summary: PlanSummary) -> str:
@@ -38,6 +52,7 @@ def render_markdown(summary: PlanSummary) -> str:
             lines.append(f"  - Explanation: {finding.explanation}")
             for evidence in finding.evidence:
                 lines.append(f"  - Evidence: {evidence}")
+    _append_markdown_drift(lines, summary)
     return "\n".join(lines) + "\n"
 
 
@@ -58,6 +73,7 @@ def render_terminal(summary: PlanSummary) -> str:
             if resource.action_reason:
                 lines.append(f"  action reason: {resource.action_reason}")
     _append_terminal_findings(lines, summary)
+    _append_terminal_drift(lines, summary)
     return "\n".join(lines) + "\n"
 
 
@@ -71,6 +87,51 @@ def _append_terminal_findings(lines: list[str], summary: PlanSummary) -> None:
         lines.append(f"  explanation: {finding.explanation}")
         for evidence in finding.evidence:
             lines.append(f"  evidence: {evidence}")
+
+
+def _append_markdown_drift(lines: list[str], summary: PlanSummary) -> None:
+    """Keep remote drift visibly separate from Terraform's planned actions."""
+    if not summary.drift_findings:
+        return
+    lines.extend(["", "## Detected Remote Drift", ""])
+    for finding in summary.drift_findings:
+        lines.append(f"- `{finding.address}` (`{finding.resource_type}`): **{finding.status}** {finding.category}")
+        lines.append(f"  - Explanation: {finding.explanation}")
+        for evidence in finding.evidence:
+            lines.append(f"  - Evidence: {evidence}")
+
+
+def _append_terminal_drift(lines: list[str], summary: PlanSummary) -> None:
+    if not summary.drift_findings:
+        return
+    lines.append("Detected remote drift:")
+    for finding in summary.drift_findings:
+        lines.append(f"- {finding.address} ({finding.resource_type}): {finding.status} {finding.category}")
+        lines.append(f"  explanation: {finding.explanation}")
+        for evidence in finding.evidence:
+            lines.append(f"  evidence: {evidence}")
+
+
+def render_drift_markdown(summary: PlanSummary) -> str:
+    lines = ["# Terraform Detected Remote Drift", "", f"- Format version: `{summary.format_version}`"]
+    if summary.terraform_version:
+        lines.append(f"- Terraform version: `{summary.terraform_version}`")
+    if not summary.drift_findings:
+        lines.extend(["", "No detected remote drift was recorded in `resource_drift`."])
+    else:
+        _append_markdown_drift(lines, summary)
+    return "\n".join(lines) + "\n"
+
+
+def render_drift_terminal(summary: PlanSummary) -> str:
+    lines = [f"Terraform detected remote drift (format {summary.format_version})"]
+    if summary.terraform_version:
+        lines.append(f"Terraform version: {summary.terraform_version}")
+    if not summary.drift_findings:
+        lines.append("No detected remote drift was recorded in resource_drift.")
+    else:
+        _append_terminal_drift(lines, summary)
+    return "\n".join(lines) + "\n"
 
 
 def render_review_json(report: StandardsReport) -> str:
@@ -125,6 +186,46 @@ def render_fix_terminal(proposal: FixProposal) -> str:
     if proposal.diff:
         lines.extend(["Proposed diff:", proposal.diff.rstrip("\n")])
     return "\n".join(lines) + "\n"
+
+
+def render_import_json(proposal: ImportProposal) -> str:
+    """Render the caller-requested import proposal without touching disk."""
+    return json.dumps(proposal.as_dict(), indent=2, sort_keys=True) + "\n"
+
+
+def render_import_markdown(proposal: ImportProposal) -> str:
+    """Keep generated HCL in a diff fence so it is visibly review-only."""
+    lines = [
+        "# Terraform Import Proposal",
+        "",
+        f"- Status: **{proposal.status}**",
+        f"- Target address: `{proposal.address}`",
+        f"- Output path: `{proposal.output_path}`",
+        f"- Starter configuration: `{proposal.starter_status}`",
+        "",
+        proposal.summary,
+        "",
+        proposal.rationale,
+        "",
+        "```diff",
+        proposal.diff.rstrip("\n"),
+        "```",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render_import_terminal(proposal: ImportProposal) -> str:
+    """Use the same explicit-diff convention as safe refactoring proposals."""
+    return "\n".join([
+        f"Terraform import proposal [{proposal.status}]",
+        proposal.summary,
+        f"Target address: {proposal.address}",
+        f"Output path: {proposal.output_path}",
+        f"Starter configuration: {proposal.starter_status}",
+        f"Rationale: {proposal.rationale}",
+        "Proposed diff:",
+        proposal.diff.rstrip("\n"),
+    ]) + "\n"
 
 
 def render_verification_json(result: VerificationResult) -> str:

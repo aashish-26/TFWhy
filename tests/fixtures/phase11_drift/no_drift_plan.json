@@ -1,0 +1,12 @@
+{
+  "format_version": "1.1",
+  "terraform_version": "1.9.0",
+  "resource_changes": [
+    {
+      "address": "terraform_data.example",
+      "mode": "managed",
+      "type": "terraform_data",
+      "change": {"actions": ["update"]}
+    }
+  ]
+}

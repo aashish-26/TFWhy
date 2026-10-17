@@ -8,7 +8,7 @@
 | Type | Local-first Terraform engineering assistant |
 | Interface | Python CLI |
 | Primary users | Platform engineers, DevOps engineers, SREs, Terraform consultants, infrastructure teams |
-| Active phase | **Phase 8 — Install once, run from any Terraform project (COMPLETE)** |
+| Active phase | **No active phase — Phase 11 is complete** |
 | Core constraint | No `apply`, no `destroy`, no telemetry, no raw-plan persistence |
 
 **Working agreement:** GitHub Copilot implements bounded tasks. ChatGPT supports architecture, Terraform semantics, test strategy, debugging, and independent reasoning. Automated tests—not an AI assertion—establish expected behavior.
@@ -116,7 +116,7 @@ Names may differ in the actual repository; do not rename modules simply to match
 - Future optional AI adapter
 ## 4. Current repository status
 
-_Verified against the repository and latest local smoke tests on 2026-10-16. Counts below are evidence from the current workspace, not a permanent guarantee._
+_Verified against the repository and latest local smoke tests on 2026-10-17. Counts below are evidence from the current workspace, not a permanent guarantee._
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
@@ -127,7 +127,7 @@ _Verified against the repository and latest local smoke tests on 2026-10-16. Cou
 | Local history | Complete | Opt-in sanitized JSON history, recurrence observation, corruption handling |
 | Packaging/release readiness | Complete | Editable install, console entry point, `.gitignore`, GitHub Actions, CLI smoke tests |
 
-**Latest evidence:** the full Python suite passes **36 tests**. The corporate-style offline fixture produces a Terraform JSON plan with **22 module-addressed resources**, without AWS credentials or cloud access. Local `pipx install .` and outside-repository CLI smoke tests pass.
+**Latest evidence:** the full Python suite passes **58 tests**. Phase 11 exercised terminal, Markdown, and JSON drift output; positive, absent, malformed, and privacy-protected drift metadata; and bounded legacy-provider migration guidance. It uses only user-supplied plan JSON and static configuration. Terraform `v1.16.6` is installed; direct validation of the AWS static fixture cannot proceed because `registry.terraform.io/hashicorp/aws` is unavailable locally, so no configuration-validation result is claimed.
 
 
 > **Evidence note:** Historical milestone labels describe completed scope. Always rerun the current suite and smoke tests before making a new completion claim.
@@ -177,40 +177,40 @@ Only the current phase is active. A future phase may be refined after the previo
 - [ ] Consider standalone binaries only if user feedback demonstrates a real need.
 **Exit criteria:** Complete for local repository installation. A clean isolated `pipx install .` environment ran `tfwhy --help` and analyzed a synthetic plan from outside the source repository. PyPI installation remains unverified because no package is published.
 
-### Phase 9 — Improve Terraform configuration understanding **(FUTURE)**
+### Phase 9 — Improve Terraform configuration understanding **(COMPLETE)**
 
 **Goal:** Reduce false positives and improve evidence linking between plan metadata and configuration.
-- [ ] Evaluate HCL parsing versus current scanning based on measured limitations.
-- [ ] Improve module-aware resource matching and source-location reporting.
-- [ ] Trace variable/local/resource references only where the implementation can do so reliably.
-- [ ] Make unsupported expressions and dynamic constructs explicitly uncertain.
-- [ ] Expand fixtures across modules, workspaces/addresses where relevant, count, for_each, data sources, moved blocks, and provider-specific replacement behavior.
-- [ ] Maintain a compatibility matrix for supported plan JSON formats and Terraform versions.
-**Exit criteria:** Improvements are demonstrated by tests that reduce known incorrect classifications without introducing unbounded parsing complexity.
+- [x] Evaluate HCL parsing versus current scanning based on measured limitations; retain the dependency-free scanner because module-address and brace-boundary fixes are covered without a parser dependency, and document its limits.
+- [x] Match complete module-qualified addresses through literal local child-module sources, and report safe relative file-and-line locations.
+- [x] Trace direct single-line variable, local, data-source, and managed-resource references where an unambiguous declaration is available.
+- [x] Keep conditionals, indirect expressions, and unsupported constructs Unknown; count, for_each, indexed addresses, and moved blocks do not establish a replacement cause.
+- [x] Add focused regressions for module isolation, interpolation-brace cross-matching, collected Phase 7 regressions, direct references, source locations, count, for_each, moved blocks, and a format `1.1` fixture.
+- [x] Document the plan-format/version compatibility boundary and configuration-scanner support matrix.
+**Exit criteria:** Complete. The 2026-10-17 suite passes 43 tests and demonstrates corrected module matching, prevented interpolation-brace cross-matching, and conservative addressing classifications without a new dependency or a Terraform language evaluator.
 
-### Phase 10 — Import and permission assistance **(FUTURE)**
+### Phase 10 — Import and permission assistance **(COMPLETE)**
 
 **Goal:** Help engineers bring existing resources under Terraform and spot potentially risky permissions.
-- [ ] Generate starter import blocks from explicitly supplied resource information.
-- [ ] Generate starter configuration only when required inputs are known.
-- [ ] Flag risky IAM wildcard actions/resources and overly permissive network rules.
-- [ ] Explain why each finding matters and show evidence and remediation options.
-- [ ] Avoid claiming exploitability from a wildcard alone.
-- [ ] Keep generated code separate until explicit user approval.
-- [ ] Add provider/resource-specific tests and document unsupported cases.
-**Exit criteria:** Import suggestions are syntactically plausible for supported examples; permission findings are evidence-based, tested, and appropriately qualified.
+- [x] Add a preview-first `tfwhy import` command using only an explicitly supplied managed-resource address and import identifier.
+- [x] Generate a starter resource body only for a root, unindexed `aws_s3_bucket`, where the supplied import ID is the bucket name; otherwise explain why a body was not generated.
+- [x] Add static `jsonencode` IAM Allow findings for global/service action wildcards and global resource wildcards, without reporting policy contents.
+- [x] Add narrow findings for all-protocol unrestricted security-group egress and public network-ACL SSH/RDP or all-protocol ingress; retain existing security-group ingress coverage.
+- [x] Use stable review finding IDs, severity, evidence, rationale, and remediation; explicitly state that a finding does not establish exploitability.
+- [x] Render unified diffs by default and write only after `--apply --approve --out`; refuse an existing output path and never create parent directories implicitly.
+- [x] Add synthetic import/permission fixtures, positive/negative/malformed/ambiguity/privacy tests, and document unsupported cases.
+**Exit criteria:** Complete. The 2026-10-17 suite passes 52 tests; the generated import fixture passes `terraform fmt -check`; static permission findings are evidence-backed and conservative.
 
-### Phase 11 — Drift and upgrade assistance **(FUTURE)**
+### Phase 11 — Drift and upgrade assistance **(COMPLETE)**
 
 **Goal:** Explain supported drift and version migration cases using plans the user generates.
-- [ ] Accept user-generated refresh-only plans where supported.
-- [ ] Separate planned configuration changes from detected remote changes where the plan format permits it.
-- [ ] Explain possible drift causes without claiming who made a change.
-- [ ] Add supported deprecation and provider migration guidance based on maintained sources/fixtures.
-- [ ] Evaluate Terraform/OpenTofu differences only when there is a concrete testable use case.
-- [ ] Keep compatibility claims versioned and tested.
+- [x] Accept user-generated refresh-only plans when their JSON contains Terraform's supported `resource_drift` metadata; TFWhy does not claim the JSON identifies plan mode.
+- [x] Separate `resource_changes` (planned resource changes) from `resource_drift` (Terraform-detected remote differences), including only structural `relevant_attributes` evidence.
+- [x] Explain that detected remote differences do not establish who or what caused them, or prove they caused a planned action.
+- [x] Add `TFWHY-UPGRADE-001` for the literal legacy `hashicorp/terraform` provider source, based on HashiCorp's documented incompatibility with Terraform 0.11 and later.
+- [x] Record OpenTofu behavior as unsupported because no concrete reproducible JSON-compatibility case was available.
+- [x] Test supported format `1.0`/`1.1` drift inputs, no-drift, malformed, privacy, and terminal/Markdown/JSON output cases.
 Constraints: No default direct AWS access and no automatic infrastructure changes.
-**Exit criteria:** Each supported case has synthetic or reproducible fixtures and clear unknown-case behavior.
+**Exit criteria:** Complete. The 2026-10-17 suite passes 58 tests. Synthetic format-1.x fixtures cover detected remote drift, ordinary non-drift plans, malformed structural metadata, and safe output. No new dependency, cloud access, provider call, AI service, or OpenTofu compatibility claim was added.
 
 ### Phase 12 — Optional AI explanations **(FUTURE; ONLY AFTER CORE RELIABILITY)**
 
@@ -359,12 +359,18 @@ Update this section only when a meaningful decision, phase transition, or constr
 | 2026-10-16 | Reported milestones 1–6 complete; Phase 7 is current. | Existing CLI capabilities, packaging work, and corporate-style synthetic testing were reported complete. Verify against the current repository and test output. |
 | 2026-10-16 | Phase 7 reliability hardening completed; Phase 8 is current. | Fixed the public-ingress false negative for direct literal variable defaults, added public/private regression tests, and verified 35 passing tests plus terminal/Markdown/JSON review output. Computed or indirect values and module-addressed replacement matching remain intentionally conservative. |
 | 2026-10-16 | Phase 8 completed for local repository distribution. | Isolated `pipx install .` and outside-project CLI smoke passed; `review` defaults to the caller's directory; history stayed in the user data path. No PyPI package exists, so published-package installation remains unverified. |
+| 2026-10-17 | Phase 9 activated. | The current implementation and regression tests will be audited for configuration-to-plan matching errors before making bounded improvements. |
+| 2026-10-17 | Phase 9 completed. | Fixed module-address matching and interpolation-brace cross-matching; added bounded direct-reference/source-location evidence; corrected indexed-address confidence to Unknown; the full suite passed 43 tests. A maintained HCL parser was not justified by the demonstrated cases. |
+| 2026-10-17 | Phase 10 activated. | Begin with a bounded, local-only import proposal and static IAM/network permission review; do not infer cloud resource settings or exploitability. |
+| 2026-10-17 | Phase 10 completed. | Added preview-first explicit import proposals with guarded writes, one truthful S3 starter configuration, IAM wildcard and narrow network findings, scanner-boundary and blank-tag bug fixes, and 52 passing tests. No provider, cloud, AI, network service, or dependency was added. |
+| 2026-10-17 | Phase 11 activated. | Audit plan JSON's `resource_drift` metadata and add only evidence-backed drift and upgrade guidance without cloud access or raw-value reporting. |
+| 2026-10-17 | Phase 11 completed. | Added local `drift` reporting for explicit `resource_drift`, separate safe planned/drift evidence, and one source-backed legacy provider migration check. The full suite passes 58 tests; refresh-only mode and OpenTofu compatibility remain unclaimed without JSON evidence or a reproduced case. |
 | 2026-10-16 | Global/standalone installation is deferred to Phase 8. | The project will follow the agreed phase order instead of jumping ahead. |
 | 2026-10-16 | AI is a future optional layer, not part of the deterministic core. | Privacy, reliability, and evidence quality must come first; AI must not decide safety or verification. |
 
 
 ## Current next action
 
-Phase 8 is complete for local repository installation. Do not start Phase 9 yet. The only unverified installation path is `pipx install tfwhy` from PyPI because no published package exists. Keep plan discovery explicit and do not add standalone binaries without evidence that they are needed.
+Phase 11 is complete. Do not begin Phase 12 without a new request. Retain the drift boundary: only explicit `resource_drift` metadata is reported as detected remote drift; it does not prove refresh-only mode, a cause, or who made a change. Retain the Phase 10 boundaries: user-supplied addresses and identifiers only, one supported S3 starter body, literal IAM `jsonencode` policies, and Unknown/no-finding behavior for computed or unsupported constructs.
 
 > **Guiding principle:** Build a trustworthy Terraform engineering tool first, make it easy to install second, add carefully bounded intelligence later, and validate business demand before investing in hosted/team features.

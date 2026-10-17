@@ -1,0 +1,38 @@
+{
+  "format_version": "1.0",
+  "terraform_version": "1.6.6",
+  "resource_changes": [
+    {
+      "address": "aws_instance.app",
+      "mode": "managed",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["update"],
+        "before": {"synthetic_secret": "SYNTHETIC_SECRET_MARKER"},
+        "after": {"synthetic_secret": "SYNTHETIC_SECRET_MARKER"}
+      }
+    }
+  ],
+  "resource_drift": [
+    {
+      "address": "aws_instance.app",
+      "mode": "managed",
+      "type": "aws_instance",
+      "change": {
+        "actions": ["update"],
+        "before": {"synthetic_secret": "SYNTHETIC_SECRET_MARKER"},
+        "after": {"synthetic_secret": "SYNTHETIC_SECRET_MARKER"}
+      }
+    },
+    {
+      "address": "aws_s3_bucket.logs",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "change": {"actions": ["delete"]}
+    }
+  ],
+  "relevant_attributes": [
+    {"resource": "aws_instance.app", "attribute": ["tags", "DriftMarker"]},
+    {"resource": "aws_s3_bucket.logs", "attribute": ["id"]}
+  ]
+}
